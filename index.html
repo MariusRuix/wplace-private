@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixelMap</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; cursor: crosshair; }
+  #pixels { position: absolute; inset: 0; pointer-events: none; z-index: 450; }
+  #bar {
+    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1000;
+    background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.25);
+    padding: 10px; display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px);
+  }
+  #palette { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+  .sw { width: 26px; height: 26px; border-radius: 6px; border: 2px solid #ddd; cursor: pointer; padding: 0; }
+  .sw.sel { border-color: #111; transform: scale(1.12); }
+  .sw.erase { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0/10px 10px; }
+  #info { font-size: 12px; color: #555; text-align: center; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<canvas id="pixels"></canvas>
+<div id="bar">
+  <div id="palette"></div>
+  <div id="info">Acercate para pintar</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ---- Configuracion ----
+const Z = 13;            // zoom de la cuadricula (13 = ~19 m por pixel en el ecuador)
+const MIN_VIEW = 9;      // zoom minimo para mostrar pixeles
+const MIN_PAINT = 15;    // zoom minimo para pintar (cada pixel = 4 px en pantalla)
+const API = 'api.php';
+const COLORS = ['#000000','#3c3c3c','#787878','#d2d2d2','#ffffff','#600018','#ed1c24','#ff7f27',
+  '#f6aa09','#f9dd3b','#fffabc','#0eb968','#13e67b','#87ff5e','#0c816e','#10aea6','#13e1be',
+  '#28509e','#4093e4','#60f7f2','#6b50f6','#99b1fb','#780c99','#aa38b9','#e09ff9','#cb007a',
+  '#ec1f80','#f38da9','#684634','#95682a','#f8b277', null];
+
+// ---- Estado ----
+const pixels = new Map();          // "x,y" -> color
+let color = COLORS[6];
+let hover = null;
+let spaceDown = false;   // Espacio presionado = modo pintar al mover
+let lastCell = null;     // ultimo pixel del trazo
+let asking = false;      // evita pedir la contrasena varias veces
+
+// ---- Mapa ----
+const map = L.map('map', { worldCopyJump: true }).setView([19.4326, -99.1332], 16);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+const canvas = document.getElementById('pixels');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  const s = map.getSize(), dpr = devicePixelRatio || 1;
+  canvas.width = s.x * dpr; canvas.height = s.y * dpr;
+  canvas.style.width = s.x + 'px'; canvas.style.height = s.y + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function draw() {
+  const s = map.getSize();
+  ctx.clearRect(0, 0, s.x, s.y);
+  if (map.getZoom() < MIN_VIEW) return;
+  const scale = Math.pow(2, map.getZoom() - Z);
+  const o = map.getPixelBounds().min;
+  const size = Math.max(scale, 1);
+  for (const [k, c] of pixels) {
+    const i = k.indexOf(',');
+    const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
+    if (sx < -size || sy < -size || sx > s.x || sy > s.y) continue;
+    ctx.fillStyle = c;
+    ctx.fillRect(sx, sy, size, size);
+  }
+  if (hover && map.getZoom() >= MIN_PAINT) {
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
+    ctx.strokeRect(hover.x * scale - o.x + .5, hover.y * scale - o.y + .5, size - 1, size - 1);
+  }
+}
+
+function toCell(latlng) {
+  const p = map.project(latlng, Z).floor();
+  return { x: p.x, y: p.y };
+}
+
+async function load() {
+  if (map.getZoom() < MIN_VIEW) { draw(); return; }
+  const b = map.getBounds();
+  const a = map.project(b.getNorthWest(), Z).floor();
+  const c = map.project(b.getSouthEast(), Z).floor();
+  try {
+    const r = await fetch(`${API}?x1=${a.x}&y1=${a.y}&x2=${c.x}&y2=${c.y}`);
+    const data = await r.json();
+    for (const [x, y, col] of data) pixels.set(x + ',' + y, col);
+    draw();
+  } catch (e) { setInfo('No se pudo cargar: ' + e.message); }
+}
+
+async function paint(cell) {
+  const key = cell.x + ',' + cell.y;
+  const prev = pixels.get(key);
+  if ((prev || null) === color) return;   // ya tiene ese color
+  if (color) pixels.set(key, color); else pixels.delete(key);
+  draw();
+  const headers = { 'Content-Type': 'application/json' };
+  let pass = '';
+  try { pass = localStorage.getItem('pixelmap-key') || ''; } catch (e) {}
+  if (pass) headers['X-Key'] = pass;
+  const r = await fetch(API, { method: 'POST', headers, body: JSON.stringify({ x: cell.x, y: cell.y, color }) });
+  if (!r.ok) {
+    if (prev) pixels.set(key, prev); else pixels.delete(key);
+    draw();
+    if (r.status === 401) {
+      if (asking) return;
+      asking = true;
+      const p = prompt('Contrasena para pintar:');
+      asking = false;
+      if (p) { try { localStorage.setItem('pixelmap-key', p); } catch (e) {} paint(cell); }
+    } else setInfo('Error al guardar');
+  }
+}
+
+function setInfo(t) { document.getElementById('info').textContent = t; }
+function updateInfo() {
+  const z = map.getZoom();
+  if (z < MIN_PAINT) setInfo('Acercate para pintar (zoom ' + z + ' / ' + MIN_PAINT + ')');
+  else if (spaceDown) setInfo('Pintando... (suelta Espacio para parar)');
+  else setInfo((hover ? `Pixel ${hover.x}, ${hover.y} · ` : '') + 'Clic para pintar · mantén Espacio y mueve el mouse');
+}
+
+// ---- Paleta ----
+const pal = document.getElementById('palette');
+COLORS.forEach(c => {
+  const b = document.createElement('button');
+  b.className = 'sw' + (c ? '' : ' erase') + (c === color ? ' sel' : '');
+  if (c) b.style.background = c;
+  b.title = c || 'Borrar';
+  b.onclick = () => {
+    color = c;
+    pal.querySelectorAll('.sw').forEach(e => e.classList.remove('sel'));
+    b.classList.add('sel');
+  };
+  pal.appendChild(b);
+});
+
+// ---- Eventos ----
+map.on('click', e => {
+  if (map.getZoom() < MIN_PAINT) { map.setView(e.latlng, MIN_PAINT + 1); return; }
+  paint(toCell(e.latlng));
+});
+// Pinta todos los pixeles entre el ultimo y el actual (para que no queden huecos)
+function strokeTo(cell) {
+  if (map.getZoom() < MIN_PAINT) return;
+  if (!lastCell) { paint(cell); lastCell = cell; return; }
+  let x0 = lastCell.x, y0 = lastCell.y;
+  const x1 = cell.x, y1 = cell.y;
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  while (x0 !== x1 || y0 !== y1) {
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+    paint({ x: x0, y: y0 });
+  }
+  lastCell = cell;
+}
+
+function stopStroke() {
+  spaceDown = false;
+  lastCell = null;
+  updateInfo();
+}
+
+map.on('mousemove', e => {
+  hover = toCell(e.latlng);
+  if (spaceDown) strokeTo(hover);
+  draw(); updateInfo();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space') return;
+  e.preventDefault();               // evita que Espacio active un boton de la paleta
+  if (e.repeat || spaceDown) return;
+  spaceDown = true;
+  lastCell = null;
+  if (hover) strokeTo(hover);
+  updateInfo();
+});
+document.addEventListener('keyup', e => { if (e.code === 'Space') stopStroke(); });
+window.addEventListener('blur', stopStroke);
+map.on('mouseout', () => { hover = null; draw(); });
+map.on('move', draw);
+map.on('zoomstart', () => { canvas.style.visibility = 'hidden'; });
+map.on('zoomend', () => { canvas.style.visibility = ''; draw(); updateInfo(); });
+map.on('moveend', load);
+map.on('resize', resize);
+
+resize();
+load();
+updateInfo();
+</script>
+</body>
+</html>
