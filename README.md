@@ -32,6 +32,11 @@ scp -P 65002 index.html api.php u123456789@IP:domains/tudominio.com/public_html/
 Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de archivos.
 
 ## Uso
+- **Pixeles nuevos y confirmar:** todo lo que pintas (clic, trazo, bote, pintado automatico, deshacer) queda como *nuevo* solo en tu navegador, marcado con borde blanco (X roja = se borrara). Aparece una barra con el numero de pixeles nuevos:
+  - **Confirmar** (o **Enter**): los guarda en el servidor.
+  - **Descartar**: los quita sin guardar.
+  - **Resaltar**: atenua lo guardado y la plantilla para ver solo lo nuevo.
+  Si cierras la pagina con pixeles sin confirmar, el navegador avisa.
 - **Clic:** pinta un pixel.
 - **Mantener Espacio + mover el mouse:** pinta por donde pasa el cursor (suelta Espacio para parar).
 - El cuadro con tachado de la paleta borra.
@@ -40,7 +45,7 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
   - **Area cerrada (lo pintado):** como el bote de Paint; rellena los pixeles conectados con el mismo color pintado (o vacios) hasta chocar con otro color. Sirve para dibujar un contorno y rellenarlo.
   - **Color de la plantilla:** rellena el bloque continuo del mismo color de la imagen.
   Usa el color de la paleta, o los de la plantilla si esta marcado "Pintar con los colores de la plantilla"; con el borrador, borra. Esc cancela.
-- **Deshacer** (boton con flecha o **Ctrl+Z**): revierte el ultimo clic, trazo con Espacio, relleno o pintado automatico (hasta 50 pasos).
+- **Deshacer** (boton con flecha o **Ctrl+Z**): revierte el ultimo clic, trazo con Espacio, relleno o pintado automatico (hasta 50 pasos). Si lo deshecho ya estaba confirmado, el cambio queda como nuevo y hay que confirmarlo.
 
 ## Plantilla (imagen guia)
 - Panel **Plantilla** (arriba a la derecha): elige una imagen; aparece centrada en la vista.
@@ -50,7 +55,7 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - **Pintar con los colores de la plantilla:** el clic y el trazo con Espacio usan el color de la imagen en ese pixel; fuera de la imagen o en zonas transparentes no pinta. Elegir un color de la paleta lo desactiva.
 - **Ver faltantes:** muestra solo lo que falta de la plantilla (con un punto en cada pixel); lo ya pintado correctamente se ve solido. Los pixeles pintados con otro color cuentan como faltantes. Debajo aparece el progreso (pintados / total y %).
 - **Ir a faltante:** centra el mapa en el siguiente pixel que falta (cada clic avanza al siguiente).
-- **Pintar todo automatico:** pinta de una vez todos los pixeles que faltan (o estan mal) con los colores de la plantilla, en lotes de 500. Pide confirmacion; un segundo clic lo detiene. Requiere subir tambien el nuevo `api.php`.
+- **Pintar todo automatico:** agrega como nuevos todos los pixeles que faltan (o estan mal) con los colores de la plantilla. Se guardan al pulsar Confirmar (se envian en lotes de 500).
 - La plantilla se recuerda en ese navegador (no se sube al servidor).
 
 ## Opciones
