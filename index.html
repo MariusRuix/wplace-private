@@ -9,22 +9,59 @@
   html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
   #map { position: absolute; inset: 0; cursor: crosshair; }
   #pixels { position: absolute; inset: 0; pointer-events: none; z-index: 450; }
+  .panel {
+    position: absolute; z-index: 1000; background: #fff; border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.25); padding: 10px;
+  }
   #bar {
-    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1000;
-    background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.25);
-    padding: 10px; display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px);
+    left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px);
   }
   #palette { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
   .sw { width: 26px; height: 26px; border-radius: 6px; border: 2px solid #ddd; cursor: pointer; padding: 0; }
   .sw.sel { border-color: #111; transform: scale(1.12); }
   .sw.erase { background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0/10px 10px; }
+  .sw.tool { background: #f6f6f6; display: grid; place-items: center; }
+  .sw.tool.on { background: #111; color: #fff; border-color: #111; }
+  .sw.custom { border-style: dashed; border-color: #999; }
+  .sw.custom.sel { border-style: solid; border-color: #111; }
+  .sep { width: 1px; background: #ddd; margin: 0 2px; }
+  #map.picking { cursor: copy; }
   #info { font-size: 12px; color: #555; text-align: center; }
+
+  #tpl { top: 12px; right: 12px; width: 230px; font-size: 13px; max-width: calc(100vw - 80px); }
+  #tpl summary { font-weight: 600; cursor: pointer; }
+  #tpl .row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  #tpl .row label { flex: 0 0 64px; color: #555; }
+  #tpl input[type=number] { width: 70px; }
+  #tpl input[type=range] { flex: 1; }
+  #tpl button { flex: 1; padding: 5px; border: 1px solid #ccc; border-radius: 6px; background: #f6f6f6; cursor: pointer; }
+  #tpl button.on { background: #111; color: #fff; border-color: #111; }
+  #tpl .hint { font-size: 11px; color: #777; margin-top: 6px; }
+  #tpl .needs { display: none; }
+  #tpl.has .needs { display: block; }
+  #tpl.has .row.needs { display: flex; }
 </style>
 </head>
 <body>
 <div id="map"></div>
 <canvas id="pixels"></canvas>
-<div id="bar">
+
+<details id="tpl" class="panel" open>
+  <summary>Plantilla</summary>
+  <div class="row"><input type="file" id="tplFile" accept="image/*"></div>
+  <div class="row needs"><label>Ancho</label><input type="number" id="tplW" min="1" max="2000"> <span id="tplH" style="color:#777"></span></div>
+  <div class="row needs"><label>Opacidad</label><input type="range" id="tplOp" min="0" max="1" step="0.05"></div>
+  <div class="row needs">
+    <button id="tplMove" title="Clic en el mapa para colocar la esquina superior izquierda">Mover</button>
+    <button id="tplShow">Ocultar</button>
+    <button id="tplDel">Quitar</button>
+  </div>
+  <div class="row needs"><label style="flex:1"><input type="checkbox" id="tplUse"> Pintar con los colores de la plantilla</label></div>
+  <div class="hint needs">Cada pixel de la imagen = 1 pixel del mapa.</div>
+</details>
+
+<div id="bar" class="panel">
   <div id="palette"></div>
   <div id="info">Acercate para pintar</div>
 </div>
@@ -36,6 +73,7 @@ const Z = 13;            // zoom de la cuadricula (13 = ~19 m por pixel en el ec
 const MIN_VIEW = 9;      // zoom minimo para mostrar pixeles
 const MIN_PAINT = 15;    // zoom minimo para pintar (cada pixel = 4 px en pantalla)
 const API = 'api.php';
+const TPL_KEY = 'pixelmap-template';
 const COLORS = ['#000000','#3c3c3c','#787878','#d2d2d2','#ffffff','#600018','#ed1c24','#ff7f27',
   '#f6aa09','#f9dd3b','#fffabc','#0eb968','#13e67b','#87ff5e','#0c816e','#10aea6','#13e1be',
   '#28509e','#4093e4','#60f7f2','#6b50f6','#99b1fb','#780c99','#aa38b9','#e09ff9','#cb007a',
@@ -48,6 +86,14 @@ let hover = null;
 let spaceDown = false;   // Espacio presionado = modo pintar al mover
 let lastCell = null;     // ultimo pixel del trazo
 let asking = false;      // evita pedir la contrasena varias veces
+let picking = false;     // cuentagotas activo
+const CUSTOM_KEY = 'pixelmap-custom';
+let customColors = [];   // colores tomados con el cuentagotas
+try { customColors = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]'); } catch (e) {}
+
+// Plantilla: imagen original + version reescalada (1 px = 1 pixel del mapa)
+const tpl = { src: null, img: null, canvas: null, data: null, x: 0, y: 0, w: 0, h: 0,
+              opacity: 0.5, visible: true, placing: false, use: false };
 
 // ---- Mapa ----
 const map = L.map('map', { worldCopyJump: true }).setView([19.4326, -99.1332], 16);
@@ -66,6 +112,11 @@ function resize() {
   draw();
 }
 
+function tplPos() {
+  // mientras se mueve, la plantilla sigue al cursor
+  return tpl.placing && hover ? hover : { x: tpl.x, y: tpl.y };
+}
+
 function draw() {
   const s = map.getSize();
   ctx.clearRect(0, 0, s.x, s.y);
@@ -73,6 +124,22 @@ function draw() {
   const scale = Math.pow(2, map.getZoom() - Z);
   const o = map.getPixelBounds().min;
   const size = Math.max(scale, 1);
+
+  // Plantilla (debajo de los pixeles pintados)
+  if (tpl.canvas && (tpl.visible || tpl.placing)) {
+    const p = tplPos();
+    ctx.save();
+    ctx.globalAlpha = tpl.placing ? Math.max(tpl.opacity, 0.6) : tpl.opacity;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tpl.canvas, p.x * scale - o.x, p.y * scale - o.y, tpl.w * scale, tpl.h * scale);
+    ctx.restore();
+    if (tpl.placing) {
+      ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+      ctx.strokeRect(p.x * scale - o.x, p.y * scale - o.y, tpl.w * scale, tpl.h * scale);
+      ctx.setLineDash([]);
+    }
+  }
+
   for (const [k, c] of pixels) {
     const i = k.indexOf(',');
     const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
@@ -80,7 +147,7 @@ function draw() {
     ctx.fillStyle = c;
     ctx.fillRect(sx, sy, size, size);
   }
-  if (hover && map.getZoom() >= MIN_PAINT) {
+  if (hover && map.getZoom() >= MIN_PAINT && !tpl.placing) {
     ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
     ctx.strokeRect(hover.x * scale - o.x + .5, hover.y * scale - o.y + .5, size - 1, size - 1);
   }
@@ -104,17 +171,33 @@ async function load() {
   } catch (e) { setInfo('No se pudo cargar: ' + e.message); }
 }
 
+// Color de la plantilla en un pixel del mapa (undefined = fuera o transparente)
+function tplColor(cell) {
+  if (!tpl.data) return undefined;
+  const ix = cell.x - tpl.x, iy = cell.y - tpl.y;
+  if (ix < 0 || iy < 0 || ix >= tpl.w || iy >= tpl.h) return undefined;
+  const i = (iy * tpl.w + ix) * 4, d = tpl.data;
+  if (d[i + 3] < 128) return undefined;
+  return '#' + [d[i], d[i + 1], d[i + 2]].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function brushColor(cell) {
+  return tpl.use && tpl.data ? tplColor(cell) : color;
+}
+
 async function paint(cell) {
+  const c = brushColor(cell);
+  if (c === undefined) return;            // fuera de la plantilla
   const key = cell.x + ',' + cell.y;
   const prev = pixels.get(key);
-  if ((prev || null) === color) return;   // ya tiene ese color
-  if (color) pixels.set(key, color); else pixels.delete(key);
+  if ((prev || null) === c) return;       // ya tiene ese color
+  if (c) pixels.set(key, c); else pixels.delete(key);
   draw();
   const headers = { 'Content-Type': 'application/json' };
   let pass = '';
   try { pass = localStorage.getItem('pixelmap-key') || ''; } catch (e) {}
   if (pass) headers['X-Key'] = pass;
-  const r = await fetch(API, { method: 'POST', headers, body: JSON.stringify({ x: cell.x, y: cell.y, color }) });
+  const r = await fetch(API, { method: 'POST', headers, body: JSON.stringify({ x: cell.x, y: cell.y, color: c }) });
   if (!r.ok) {
     if (prev) pixels.set(key, prev); else pixels.delete(key);
     draw();
@@ -131,34 +214,202 @@ async function paint(cell) {
 function setInfo(t) { document.getElementById('info').textContent = t; }
 function updateInfo() {
   const z = map.getZoom();
-  if (z < MIN_PAINT) setInfo('Acercate para pintar (zoom ' + z + ' / ' + MIN_PAINT + ')');
+  if (picking) {
+    const c = hover ? pickColorAt(hover) : null;
+    setInfo('Cuentagotas: ' + (c || '—') + ' · clic para tomar el color (Esc cancela)');
+  }
+  else if (tpl.placing) setInfo('Clic en el mapa para colocar la plantilla (Esc para cancelar)');
+  else if (z < MIN_PAINT) setInfo('Acercate para pintar (zoom ' + z + ' / ' + MIN_PAINT + ')');
   else if (spaceDown) setInfo('Pintando... (suelta Espacio para parar)');
   else setInfo((hover ? `Pixel ${hover.x}, ${hover.y} · ` : '') + 'Clic para pintar · mantén Espacio y mueve el mouse');
 }
 
 // ---- Paleta ----
 const pal = document.getElementById('palette');
-COLORS.forEach(c => {
+
+function selectColor(c) {
+  color = c;
+  pal.querySelectorAll('.sw').forEach(e => e.classList.toggle('sel', !e.classList.contains('tool') && e.dataset.c === String(c)));
+  // elegir un color de la paleta desactiva "pintar con la plantilla"
+  if (tpl.use) { tpl.use = false; $('tplUse').checked = false; saveTpl(); }
+}
+
+function makeSwatch(c, custom) {
   const b = document.createElement('button');
-  b.className = 'sw' + (c ? '' : ' erase') + (c === color ? ' sel' : '');
+  b.className = 'sw' + (c ? '' : ' erase') + (custom ? ' custom' : '');
+  b.dataset.c = String(c);
   if (c) b.style.background = c;
-  b.title = c || 'Borrar';
-  b.onclick = () => {
-    color = c;
-    pal.querySelectorAll('.sw').forEach(e => e.classList.remove('sel'));
-    b.classList.add('sel');
+  b.title = c ? c + (custom ? ' (cuentagotas · clic derecho para quitar)' : '') : 'Borrar';
+  b.onclick = () => selectColor(c);
+  if (custom) b.oncontextmenu = e => {
+    e.preventDefault();
+    customColors = customColors.filter(x => x !== c);
+    saveCustom(); renderPalette();
+    if (color === c) selectColor(COLORS[0]);
   };
-  pal.appendChild(b);
-});
+  return b;
+}
+
+function saveCustom() {
+  try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(customColors)); } catch (e) {}
+}
+
+const dropper = document.createElement('button');
+dropper.className = 'sw tool';
+dropper.title = 'Cuentagotas (tecla I): toma un color de la plantilla';
+dropper.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>';
+dropper.onclick = () => setPicking(!picking);
+
+function renderPalette() {
+  pal.innerHTML = '';
+  pal.appendChild(dropper);
+  COLORS.forEach(c => pal.appendChild(makeSwatch(c, false)));
+  if (customColors.length) {
+    const s = document.createElement('div'); s.className = 'sep'; pal.appendChild(s);
+    customColors.forEach(c => pal.appendChild(makeSwatch(c, true)));
+  }
+  pal.querySelectorAll('.sw').forEach(e => e.classList.toggle('sel', !e.classList.contains('tool') && e.dataset.c === String(color)));
+}
+
+function setPicking(on) {
+  picking = on;
+  if (on) tpl.placing = false;
+  dropper.classList.toggle('on', on);
+  document.getElementById('map').classList.toggle('picking', on);
+  if (typeof syncUI === 'function') syncUI();
+  updateInfo(); draw();
+}
+
+// Color bajo el cursor: primero la plantilla, si no, el pixel ya pintado
+function pickColorAt(cell) {
+  return tplColor(cell) || pixels.get(cell.x + ',' + cell.y) || null;
+}
+
+function pickAt(cell) {
+  const c = pickColorAt(cell);
+  setPicking(false);
+  if (!c) { setInfo('No hay color en ese pixel'); return; }
+  if (!COLORS.includes(c)) {
+    customColors = [c, ...customColors.filter(x => x !== c)].slice(0, 16);
+    saveCustom(); renderPalette();
+  }
+  selectColor(c);
+  setInfo('Color tomado: ' + c);
+}
+
+renderPalette();
+
+// ---- Plantilla ----
+const $ = id => document.getElementById(id);
+const panel = $('tpl');
+
+function saveTpl() {
+  try {
+    if (!tpl.src) { localStorage.removeItem(TPL_KEY); return; }
+    localStorage.setItem(TPL_KEY, JSON.stringify({
+      src: tpl.src, x: tpl.x, y: tpl.y, w: tpl.w,
+      opacity: tpl.opacity, visible: tpl.visible, use: tpl.use
+    }));
+  } catch (e) { /* imagen muy grande para localStorage: solo dura esta sesion */ }
+}
+
+// Reescala la imagen original al ancho pedido (1 px = 1 pixel del mapa)
+function buildTpl(width) {
+  const img = tpl.img;
+  tpl.w = Math.max(1, Math.min(2000, Math.round(width)));
+  tpl.h = Math.max(1, Math.round(img.naturalHeight * tpl.w / img.naturalWidth));
+  const c = document.createElement('canvas');
+  c.width = tpl.w; c.height = tpl.h;
+  const cx = c.getContext('2d', { willReadFrequently: true });
+  cx.imageSmoothingEnabled = tpl.w < img.naturalWidth;   // suaviza solo al reducir
+  cx.imageSmoothingQuality = 'high';
+  cx.drawImage(img, 0, 0, tpl.w, tpl.h);
+  tpl.canvas = c;
+  tpl.data = cx.getImageData(0, 0, tpl.w, tpl.h).data;
+  $('tplW').value = tpl.w;
+  $('tplH').textContent = '× ' + tpl.h;
+}
+
+function syncUI() {
+  panel.classList.toggle('has', !!tpl.canvas);
+  $('tplOp').value = tpl.opacity;
+  $('tplShow').textContent = tpl.visible ? 'Ocultar' : 'Mostrar';
+  $('tplMove').classList.toggle('on', tpl.placing);
+  $('tplUse').checked = tpl.use;
+}
+
+function loadImage(src, cb) {
+  const img = new Image();
+  img.onload = () => cb(img);
+  img.onerror = () => setInfo('No se pudo leer la imagen');
+  img.src = src;
+}
+
+$('tplFile').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => loadImage(reader.result, img => {
+    tpl.img = img;
+    buildTpl(Math.min(img.naturalWidth, 200));
+    // guarda la version reescalada (mas ligera) y la centra en la vista
+    tpl.src = tpl.canvas.toDataURL('image/png');
+    const c = toCell(map.getCenter());
+    tpl.x = c.x - Math.floor(tpl.w / 2); tpl.y = c.y - Math.floor(tpl.h / 2);
+    tpl.visible = true;
+    if (map.getZoom() < MIN_PAINT - 1) map.setZoom(MIN_PAINT - 1);
+    saveTpl(); syncUI(); draw();
+  });
+  reader.readAsDataURL(f);
+  e.target.value = '';
+};
+
+$('tplW').onchange = e => {
+  if (!tpl.img) return;
+  buildTpl(+e.target.value || tpl.w);
+  tpl.src = tpl.canvas.toDataURL('image/png');
+  saveTpl(); draw();
+};
+$('tplOp').oninput = e => { tpl.opacity = +e.target.value; saveTpl(); draw(); };
+$('tplShow').onclick = () => { tpl.visible = !tpl.visible; saveTpl(); syncUI(); draw(); };
+$('tplMove').onclick = () => { if (picking) setPicking(false); tpl.placing = !tpl.placing; syncUI(); updateInfo(); draw(); };
+$('tplUse').onchange = e => { tpl.use = e.target.checked; saveTpl(); };
+$('tplDel').onclick = () => {
+  if (!confirm('¿Quitar la plantilla? (los pixeles pintados se quedan)')) return;
+  Object.assign(tpl, { src: null, img: null, canvas: null, data: null, placing: false, use: false });
+  saveTpl(); syncUI(); updateInfo(); draw();
+};
+
+// Restaurar plantilla guardada
+try {
+  const saved = JSON.parse(localStorage.getItem(TPL_KEY) || 'null');
+  if (saved && saved.src) {
+    loadImage(saved.src, img => {
+      tpl.img = img; tpl.src = saved.src;
+      Object.assign(tpl, { x: saved.x, y: saved.y, opacity: saved.opacity ?? 0.5,
+                           visible: saved.visible !== false, use: !!saved.use });
+      buildTpl(saved.w || img.naturalWidth);
+      syncUI(); draw();
+    });
+  }
+} catch (e) {}
+syncUI();
 
 // ---- Eventos ----
 map.on('click', e => {
+  if (picking) { pickAt(toCell(e.latlng)); return; }
+  if (tpl.placing) {
+    const c = toCell(e.latlng);
+    tpl.x = c.x; tpl.y = c.y; tpl.placing = false; tpl.visible = true;
+    saveTpl(); syncUI(); updateInfo(); draw();
+    return;
+  }
   if (map.getZoom() < MIN_PAINT) { map.setView(e.latlng, MIN_PAINT + 1); return; }
   paint(toCell(e.latlng));
 });
 // Pinta todos los pixeles entre el ultimo y el actual (para que no queden huecos)
 function strokeTo(cell) {
-  if (map.getZoom() < MIN_PAINT) return;
+  if (map.getZoom() < MIN_PAINT || tpl.placing) return;
   if (!lastCell) { paint(cell); lastCell = cell; return; }
   let x0 = lastCell.x, y0 = lastCell.y;
   const x1 = cell.x, y1 = cell.y;
@@ -187,8 +438,13 @@ map.on('mousemove', e => {
 });
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && picking) { setPicking(false); return; }
+  if (e.key === 'Escape' && tpl.placing) { tpl.placing = false; syncUI(); updateInfo(); draw(); return; }
+  if (e.target.matches && e.target.matches('input[type=number]')) return;
+  if ((e.key === 'i' || e.key === 'I') && !e.ctrlKey && !e.metaKey) { setPicking(!picking); return; }
   if (e.code !== 'Space') return;
-  e.preventDefault();               // evita que Espacio active un boton de la paleta
+  if (picking) { e.preventDefault(); return; }
+  e.preventDefault();               // evita que Espacio active un boton
   if (e.repeat || spaceDown) return;
   spaceDown = true;
   lastCell = null;
@@ -203,6 +459,10 @@ map.on('zoomstart', () => { canvas.style.visibility = 'hidden'; });
 map.on('zoomend', () => { canvas.style.visibility = ''; draw(); updateInfo(); });
 map.on('moveend', load);
 map.on('resize', resize);
+
+// Evita que los clics en el panel lleguen al mapa
+L.DomEvent.disableClickPropagation(panel);
+L.DomEvent.disableScrollPropagation(panel);
 
 resize();
 load();

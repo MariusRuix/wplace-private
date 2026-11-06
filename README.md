@@ -30,6 +30,15 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - **Clic:** pinta un pixel.
 - **Mantener Espacio + mover el mouse:** pinta por donde pasa el cursor (suelta Espacio para parar).
 - El cuadro con tachado de la paleta borra.
+- **Cuentagotas** (primer boton de la paleta o tecla **I**): clic en el mapa para tomar el color de la plantilla en ese pixel (o del pixel pintado si no hay plantilla ahi). El color queda seleccionado y se agrega a la paleta con borde punteado; clic derecho sobre el lo quita. Esc cancela.
+
+## Plantilla (imagen guia)
+- Panel **Plantilla** (arriba a la derecha): elige una imagen; aparece centrada en la vista.
+- **Ancho:** cuantos pixeles del mapa ocupa (1 px de imagen = 1 pixel del mapa). Por defecto max. 200.
+- **Mover:** luego haz clic en el mapa donde ira la esquina superior izquierda (Esc cancela).
+- **Opacidad / Ocultar / Quitar.**
+- **Pintar con los colores de la plantilla:** el clic y el trazo con Espacio usan el color de la imagen en ese pixel; fuera de la imagen o en zonas transparentes no pinta. Elegir un color de la paleta lo desactiva.
+- La plantilla se recuerda en ese navegador (no se sube al servidor).
 
 ## Opciones
 - **Contrasena para pintar:** en `api.php`, `const PASSWORD = 'algo';`. El navegador la pide una vez.
