@@ -2,6 +2,7 @@
 // PixelMap - API minima (PHP + SQLite)
 // GET  api.php?x1=&y1=&x2=&y2=   -> [[x,y,"#rrggbb"], ...]
 // POST api.php  {"x":1,"y":2,"color":"#ff0000"}  (color null = borrar)
+// POST api.php  {"pixels":[[x,y,"#rrggbb"], ...]}  (lote, para el pintado automatico)
 
 // Contrasena opcional para pintar. Dejala vacia para no pedir nada.
 const PASSWORD = '';
@@ -57,6 +58,26 @@ if ($method === 'POST') {
     if (PASSWORD !== '' && ($_SERVER['HTTP_X_KEY'] ?? '') !== PASSWORD) fail(401, 'Contrasena incorrecta');
 
     $in = json_decode(file_get_contents('php://input'), true);
+
+    // Lote: {"pixels": [[x, y, "#rrggbb"], ...]} (maximo 5000 por peticion)
+    if (is_array($in) && isset($in['pixels']) && is_array($in['pixels'])) {
+        if (count($in['pixels']) > 5000) fail(400, 'Maximo 5000 pixeles por lote');
+        $st = $db->prepare('INSERT OR REPLACE INTO pixels (x, y, color, updated_at) VALUES (?, ?, ?, ?)');
+        $now = time();
+        $db->beginTransaction();
+        foreach ($in['pixels'] as $p) {
+            if (!is_array($p) || count($p) !== 3 || !is_int($p[0]) || !is_int($p[1])
+                || !is_string($p[2]) || !preg_match('/^#[0-9a-fA-F]{6}$/', $p[2])) {
+                $db->rollBack();
+                fail(400, 'Pixel invalido en el lote');
+            }
+            $st->execute([$p[0], $p[1], strtolower($p[2]), $now]);
+        }
+        $db->commit();
+        echo json_encode(['ok' => true, 'count' => count($in['pixels'])]);
+        exit;
+    }
+
     if (!is_array($in) || !isset($in['x'], $in['y']) || !is_int($in['x']) || !is_int($in['y'])) {
         fail(400, 'Datos invalidos');
     }

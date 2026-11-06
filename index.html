@@ -62,6 +62,9 @@
     <label style="flex:1"><input type="checkbox" id="tplMiss"> Ver faltantes</label>
     <button id="tplNext" style="flex:0 0 auto" title="Centrar el mapa en el siguiente pixel que falta">Ir a faltante</button>
   </div>
+  <div class="row needs">
+    <button id="tplAuto" title="Pinta todos los pixeles que faltan con los colores de la plantilla">Pintar todo automático</button>
+  </div>
   <div class="hint needs" id="tplProg"></div>
   <div class="hint needs">Cada pixel de la imagen = 1 pixel del mapa.</div>
 </details>
@@ -210,7 +213,61 @@ function load() {
 
 // Carga los pixeles de toda la plantilla (para contar el progreso aunque no este en pantalla)
 function loadTplArea() {
-  if (tpl.data) fetchArea(tpl.x, tpl.y, tpl.x + tpl.w - 1, tpl.y + tpl.h - 1);
+  if (tpl.data) return fetchArea(tpl.x, tpl.y, tpl.x + tpl.w - 1, tpl.y + tpl.h - 1);
+}
+
+// ---- Pintado automatico: pinta todos los faltantes por lotes ----
+let autoRunning = false, autoStop = false;
+async function autoPaint() {
+  if (autoRunning) { autoStop = true; return; }     // segundo clic = detener
+  if (!tpl.data) return;
+  await loadTplArea();                               // asegura datos frescos
+  computeProgress();
+  const list = [];
+  for (let j = 0; j < tpl.missMask.length; j++) {
+    if (tpl.missMask[j]) list.push([tpl.x + (j % tpl.w), tpl.y + Math.floor(j / tpl.w), tpl.hex[j]]);
+  }
+  if (!list.length) { setInfo('¡No falta ningun pixel!'); return; }
+  if (!confirm(`¿Pintar automaticamente ${list.length} pixeles?`)) return;
+
+  autoRunning = true; autoStop = false;
+  const btn = $('tplAuto');
+  btn.classList.add('on');
+  const BATCH = 500;
+  let done = 0;
+  try {
+    for (let k = 0; k < list.length && !autoStop; k += BATCH) {
+      const chunk = list.slice(k, k + BATCH);
+      let r;
+      for (;;) {
+        const headers = { 'Content-Type': 'application/json' };
+        let pass = '';
+        try { pass = localStorage.getItem('pixelmap-key') || ''; } catch (e) {}
+        if (pass) headers['X-Key'] = pass;
+        r = await fetch(API, { method: 'POST', headers, body: JSON.stringify({ pixels: chunk }) });
+        if (r.status !== 401) break;
+        const p = prompt('Contrasena para pintar:');
+        if (!p) { autoStop = true; break; }
+        try { localStorage.setItem('pixelmap-key', p); } catch (e) {}
+      }
+      if (autoStop) break;
+      if (!r.ok) { setInfo('Error al guardar el lote'); break; }
+      for (const [x, y, c] of chunk) pixels.set(x + ',' + y, c);
+      pxVer++;
+      done += chunk.length;
+      btn.textContent = `Detener (${Math.floor(done * 100 / list.length)}%)`;
+      draw();
+      await new Promise(res => setTimeout(res, 30));   // deja respirar al navegador y al servidor
+    }
+  } catch (e) {
+    setInfo('Error: ' + e.message);
+  } finally {
+    autoRunning = false;
+    btn.classList.remove('on');
+    btn.textContent = 'Pintar todo automático';
+    setInfo(autoStop ? `Detenido: ${done} de ${list.length} pixeles pintados`
+                     : `Listo: ${done} pixeles pintados`);
+  }
 }
 
 // ---- Progreso: que pixeles de la plantilla faltan ----
@@ -473,6 +530,7 @@ $('tplW').onchange = e => {
 };
 $('tplMiss').onchange = e => { tpl.showMissing = e.target.checked; tpl.visible = true; saveTpl(); syncUI(); draw(); };
 $('tplNext').onclick = goToMissing;
+$('tplAuto').onclick = autoPaint;
 $('tplOp').oninput = e => { tpl.opacity = +e.target.value; saveTpl(); draw(); };
 $('tplShow').onclick = () => { tpl.visible = !tpl.visible; saveTpl(); syncUI(); draw(); };
 $('tplMove').onclick = () => { if (picking) setPicking(false); tpl.placing = !tpl.placing; syncUI(); updateInfo(); draw(); };
