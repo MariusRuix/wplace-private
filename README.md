@@ -31,6 +31,7 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - **Mantener Espacio + mover el mouse:** pinta por donde pasa el cursor (suelta Espacio para parar).
 - El cuadro con tachado de la paleta borra.
 - **Cuentagotas** (primer boton de la paleta o tecla **I**): clic en el mapa para tomar el color de la plantilla en ese pixel (o del pixel pintado si no hay plantilla ahi). El color queda seleccionado y se agrega a la paleta con borde punteado; clic derecho sobre el lo quita. Esc cancela.
+- **Bote de pintura** (segundo boton de la paleta o tecla **B**): clic dentro de la plantilla y rellena todo el bloque continuo del mismo color de la imagen. Usa el color de la paleta, o el de la plantilla si esta marcado "Pintar con los colores de la plantilla"; con el borrador, borra el bloque. Fuera de la plantilla no hace nada. Esc cancela.
 
 ## Plantilla (imagen guia)
 - Panel **Plantilla** (arriba a la derecha): elige una imagen; aparece centrada en la vista.

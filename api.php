@@ -63,15 +63,18 @@ if ($method === 'POST') {
     if (is_array($in) && isset($in['pixels']) && is_array($in['pixels'])) {
         if (count($in['pixels']) > 5000) fail(400, 'Maximo 5000 pixeles por lote');
         $st = $db->prepare('INSERT OR REPLACE INTO pixels (x, y, color, updated_at) VALUES (?, ?, ?, ?)');
+        $del = $db->prepare('DELETE FROM pixels WHERE x = ? AND y = ?');
         $now = time();
         $db->beginTransaction();
         foreach ($in['pixels'] as $p) {
+            // color null = borrar ese pixel
             if (!is_array($p) || count($p) !== 3 || !is_int($p[0]) || !is_int($p[1])
-                || !is_string($p[2]) || !preg_match('/^#[0-9a-fA-F]{6}$/', $p[2])) {
+                || ($p[2] !== null && (!is_string($p[2]) || !preg_match('/^#[0-9a-fA-F]{6}$/', $p[2])))) {
                 $db->rollBack();
                 fail(400, 'Pixel invalido en el lote');
             }
-            $st->execute([$p[0], $p[1], strtolower($p[2]), $now]);
+            if ($p[2] === null) $del->execute([$p[0], $p[1]]);
+            else $st->execute([$p[0], $p[1], strtolower($p[2]), $now]);
         }
         $db->commit();
         echo json_encode(['ok' => true, 'count' => count($in['pixels'])]);
