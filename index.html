@@ -186,26 +186,39 @@ function draw() {
   const o = map.getPixelBounds().min;
   const size = Math.max(scale, 1);
 
-  // Pixeles guardados (atenuados si se esta resaltando lo nuevo)
-  if (highlightNew) ctx.globalAlpha = 0.2;
-  if (showPx) for (const [k, c] of pixels) {
-    if (pending.has(k)) continue;
-    const i = k.indexOf(',');
-    const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
-    if (sx < -size || sy < -size || sx > s.x || sy > s.y) continue;
-    ctx.fillStyle = c;
-    ctx.fillRect(sx, sy, size, size);
-  }
-  ctx.globalAlpha = 1;
-
-  // Pixeles nuevos (sin confirmar)
+  // Pintado: cada zona es una imagen ya dibujada; aqui solo se coloca en su lugar.
+  // Capa "saved" = guardado (atenuado si se resalta lo nuevo), capa "pend" = nuevos.
   const pendVisible = [];
-  if (showPx) for (const [k, c] of pending) {
-    const i = k.indexOf(',');
-    const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
-    if (sx < -size || sy < -size || sx > s.x || sy > s.y) continue;
-    if (c) { ctx.fillStyle = c; ctx.fillRect(sx, sy, size, size); }
-    pendVisible.push(sx, sy, c ? 1 : 0);
+  if (showPx) {
+    const ds = CH * scale;
+    ctx.save();
+    ctx.imageSmoothingEnabled = scale < 1;   // de lejos se promedian los colores
+    for (const ch of chunks.values()) {
+      const dx = ch.cx * ds - o.x, dy = ch.cy * ds - o.y;
+      if (dx > s.x || dy > s.y || dx + ds < 0 || dy + ds < 0) continue;
+      ctx.globalAlpha = highlightNew ? 0.2 : 1;
+      ctx.drawImage(ch.saved, dx, dy, ds, ds);
+      if (pending.size) { ctx.globalAlpha = 1; ctx.drawImage(ch.pend, dx, dy, ds, ds); }
+    }
+    ctx.restore();
+
+    // posiciones de los nuevos visibles (para marcarlos); solo cuando se ven grandes
+    if (scale >= 4 && pending.size) {
+      const x0 = Math.floor(o.x / scale), y0 = Math.floor(o.y / scale);
+      const x1 = Math.ceil((o.x + s.x) / scale), y1 = Math.ceil((o.y + s.y) / scale);
+      const add = (x, y, c) => pendVisible.push(x * scale - o.x, y * scale - o.y, c ? 1 : 0);
+      if (pending.size < (x1 - x0) * (y1 - y0)) {
+        for (const [k, c] of pending) {
+          const i = k.indexOf(','), x = +k.slice(0, i), y = +k.slice(i + 1);
+          if (x >= x0 && x <= x1 && y >= y0 && y <= y1) add(x, y, c);
+        }
+      } else {
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+          const k = x + ',' + y;
+          if (pending.has(k)) add(x, y, pending.get(k));
+        }
+      }
+    }
   }
 
   // Plantilla ENCIMA de los pixeles pintados (asi Alt / Ocultar siempre se nota).
@@ -291,13 +304,60 @@ function toCell(latlng) {
   return { x: p.x, y: p.y };
 }
 
-async function fetchArea(x1, y1, x2, y2) {
+// ---- Zonas (chunks) de CH x CH pixeles ----
+// Se usan para no volver a pedir al servidor zonas ya cargadas y para dibujar rapido:
+// cada zona guarda su propia imagen y al mover el mapa solo se reposiciona.
+const CH = 256;
+const CHUNK_TTL = 5 * 60 * 1000;          // una zona cargada se vuelve a pedir pasados 5 min
+const loadedChunks = new Map();           // "cx,cy" -> momento en que se cargo
+const chunks = new Map();                 // "cx,cy" -> { cx, cy, saved: canvas, pend: canvas }
+const MAX_ROWS = 200000;                  // mismo LIMIT que api.php
+
+function chunkOf(x, y) { return [Math.floor(x / CH), Math.floor(y / CH)]; }
+
+function getChunk(x, y) {
+  const [cx, cy] = chunkOf(x, y), key = cx + ',' + cy;
+  let ch = chunks.get(key);
+  if (!ch) {
+    const mk = () => { const c = document.createElement('canvas'); c.width = c.height = CH; return c; };
+    ch = { cx, cy, saved: mk(), pend: mk() };
+    ch.sctx = ch.saved.getContext('2d'); ch.pctx = ch.pend.getContext('2d');
+    chunks.set(key, ch);
+  }
+  return ch;
+}
+
+// Redibuja un solo pixel en la imagen de su zona (capa guardada + capa de nuevos)
+function refreshCell(x, y) {
+  const ch = getChunk(x, y), lx = x - ch.cx * CH, ly = y - ch.cy * CH, k = x + ',' + y;
+  const saved = pixels.get(k), isPend = pending.has(k), pc = isPend ? pending.get(k) : null;
+  ch.sctx.clearRect(lx, ly, 1, 1);
+  if (saved && !isPend) { ch.sctx.fillStyle = saved; ch.sctx.fillRect(lx, ly, 1, 1); }
+  ch.pctx.clearRect(lx, ly, 1, 1);
+  if (pc) { ch.pctx.fillStyle = pc; ch.pctx.fillRect(lx, ly, 1, 1); }
+}
+
+// Cambia un pixel guardado (solo si es distinto); devuelve true si cambio algo
+function setSaved(x, y, c) {
+  const k = x + ',' + y, cur = pixels.get(k) || null;
+  if (cur === (c || null)) return false;
+  if (c) pixels.set(k, c); else pixels.delete(k);
+  refreshCell(x, y);
+  return true;
+}
+
+async function fetchArea(x1, y1, x2, y2, markChunks) {
   try {
     const r = await fetch(`${API}?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`);
     const data = await r.json();
-    for (const [x, y, col] of data) pixels.set(x + ',' + y, col);
-    pxVer++;
-    draw();
+    let n = 0;
+    for (const [x, y, col] of data) if (setSaved(x, y, col)) n++;
+    // si la respuesta llego completa, esas zonas quedan marcadas como cargadas
+    if (markChunks && data.length < MAX_ROWS) {
+      const now = Date.now();
+      for (const key of markChunks) loadedChunks.set(key, now);
+    }
+    if (n) { pxVer++; draw(); }          // solo recalcula si llego algo nuevo
   } catch (e) { setInfo('No se pudo cargar: ' + e.message); }
 }
 
@@ -306,7 +366,21 @@ function load() {
   const b = map.getBounds();
   const a = map.project(b.getNorthWest(), Z).floor();
   const c = map.project(b.getSouthEast(), Z).floor();
-  fetchArea(a.x, a.y, c.x, c.y);
+  const [cx0, cy0] = chunkOf(a.x, a.y), [cx1, cy1] = chunkOf(c.x, c.y);
+  // zonas visibles que faltan (o que ya caducaron)
+  const now = Date.now(), missing = [];
+  let mx0 = Infinity, my0 = Infinity, mx1 = -Infinity, my1 = -Infinity;
+  for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) {
+    const key = cx + ',' + cy, t = loadedChunks.get(key);
+    if (t && now - t < CHUNK_TTL) continue;
+    missing.push(key);
+    mx0 = Math.min(mx0, cx); my0 = Math.min(my0, cy); mx1 = Math.max(mx1, cx); my1 = Math.max(my1, cy);
+  }
+  if (!missing.length) return;            // todo lo visible ya esta cargado: no se llama a la API
+  // una sola peticion con el rectangulo que cubre las zonas faltantes
+  const inRect = [];
+  for (let cy = my0; cy <= my1; cy++) for (let cx = mx0; cx <= mx1; cx++) inRect.push(cx + ',' + cy);
+  fetchArea(mx0 * CH, my0 * CH, (mx1 + 1) * CH - 1, (my1 + 1) * CH - 1, inRect);
 }
 
 // Carga los pixeles de toda la plantilla (para contar el progreso aunque no este en pantalla)
@@ -328,6 +402,7 @@ function effective(k) { return pending.has(k) ? pending.get(k) : (pixels.get(k) 
 function setPending(x, y, c) {
   const k = x + ',' + y;
   if ((pixels.get(k) || null) === c) pending.delete(k); else pending.set(k, c);
+  refreshCell(x, y);
 }
 
 function changed() { pxVer++; updatePendingUI(); draw(); }
@@ -358,6 +433,7 @@ async function confirmPending() {
         const key = x + ',' + y;
         if (pending.get(key) === c) pending.delete(key);   // si se volvio a pintar mientras tanto, se queda nuevo
         if (c) pixels.set(key, c); else pixels.delete(key);
+        refreshCell(x, y);
       }
       done += chunk.length;
       txt.textContent = `Guardando... ${Math.floor(done * 100 / list.length)}%`;
@@ -374,7 +450,9 @@ function discardPending() {
   if (confirming || !pending.size) return;
   if (pending.size > 20 && !confirm(`¿Descartar ${pending.size} pixeles nuevos?`)) return;
   const n = pending.size;
+  const keys = [...pending.keys()];
   pending.clear();
+  for (const k of keys) { const i = k.indexOf(','); refreshCell(+k.slice(0, i), +k.slice(i + 1)); }
   changed();
   setInfo(`Descartados ${n} pixeles nuevos`);
 }

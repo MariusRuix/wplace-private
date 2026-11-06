@@ -61,6 +61,10 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - **Pintar todo automatico:** agrega como nuevos todos los pixeles que faltan (o estan mal) con los colores de la plantilla. Se guardan al pulsar Confirmar (se envian en lotes de 500).
 - La plantilla se recuerda en ese navegador (no se sube al servidor).
 
+## Rendimiento
+- El mapa se divide en zonas de 256x256 pixeles. Cada zona se pide al servidor una sola vez (se vuelve a pedir pasados 5 minutos), asi que mover el mapa por zonas ya vistas no llama a la API.
+- Cada zona se dibuja una vez como imagen; al mover el mapa solo se reposiciona, por eso se mantiene fluido con cientos de miles de pixeles.
+
 ## Opciones
 - **Contrasena para pintar:** en `api.php`, `const PASSWORD = 'algo';`. El navegador la pide una vez.
 - **Tamano del pixel:** `const Z` en `index.html` (13 = ~19 m; 14 = ~10 m). Cambiarlo despues desalinea los pixeles ya pintados.
