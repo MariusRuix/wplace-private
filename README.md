@@ -7,6 +7,11 @@ Mapa del mundo donde pintas pixeles. Leaflet + OpenStreetMap + PHP + SQLite.
 - `api.php` — guarda/lee pixeles; crea sola `data/pixels.sqlite` (protegida con .htaccess)
 - `deploy.ps1` / `deploy.sh` — suben todo a Hostinger por SSH
 
+## Base de datos
+`data/pixels.sqlite` no se sube al repositorio (esta en `.gitignore`). En el repo va una copia vacia:
+`data/pixels.sqlite.example`. Para usarla, copiala o renombrala a `data/pixels.sqlite`.
+Si no existe, `api.php` la crea sola la primera vez que se pinta.
+
 ## Probar en tu PC
 ```
 php -S localhost:8000

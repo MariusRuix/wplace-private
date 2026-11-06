@@ -1,0 +1,4 @@
+# Base de datos local (cada instalacion crea la suya)
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
