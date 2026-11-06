@@ -48,6 +48,8 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
   Usa el color de la paleta, o los de la plantilla si esta marcado "Pintar con los colores de la plantilla"; con el borrador, borra. Esc cancela.
 - **Deshacer** (boton con flecha o **Ctrl+Z**): revierte el ultimo clic, trazo con Espacio, relleno o pintado automatico (hasta 50 pasos). Si lo deshecho ya estaba confirmado, el cambio queda como nuevo y hay que confirmarlo.
 
+- **Ver pintado: zoom X a Y** (debajo de la paleta): solo se dibuja lo pintado dentro de ese rango de zoom (6 a 19). Sirve para ver el mapa limpio de cerca o de lejos; la plantilla se sigue viendo. Se recuerda en el navegador.
+
 ## Plantilla (imagen guia)
 - Panel **Plantilla** (arriba a la derecha): elige una imagen; aparece centrada en la vista.
 - **Ancho:** cuantos pixeles del mapa ocupa (1 px de imagen = 1 pixel del mapa). Por defecto max. 200.

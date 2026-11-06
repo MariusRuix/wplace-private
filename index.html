@@ -29,6 +29,9 @@
   #map.picking { cursor: copy; }
   #map.filling { cursor: cell; }
   #info { font-size: 12px; color: #555; text-align: center; }
+  #zoomRow { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: #555; }
+  #zoomRow input { width: 44px; }
+  #zCur { color: #999; }
   #eraserRow { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: #555; }
   #eraserRow[hidden] { display: none; }
   #eraserVal { min-width: 40px; }
@@ -98,6 +101,12 @@
     <button id="pendOk" title="Guardar los pixeles nuevos en el servidor (Enter)">Confirmar</button>
   </div>
   <div id="palette"></div>
+  <div id="zoomRow" title="Fuera de este rango de zoom no se dibuja lo pintado (la plantilla si)">
+    <label for="zMin">Ver pintado: zoom</label>
+    <input type="number" id="zMin" min="6" max="19" step="1"> a
+    <input type="number" id="zMax" min="6" max="19" step="1">
+    <span id="zCur"></span>
+  </div>
   <div id="eraserRow" hidden title="Teclas + y - (o [ y ]) para cambiar el tamano">
     <label for="eraserSize">Tamaño del borrador</label>
     <input type="range" id="eraserSize" min="1" max="25" step="1">
@@ -112,6 +121,15 @@
 const Z = 13;            // zoom de la cuadricula (13 = ~19 m por pixel en el ecuador)
 const MIN_VIEW = 9;      // zoom minimo para mostrar pixeles
 const MIN_PAINT = 15;    // zoom minimo para pintar (cada pixel = 4 px en pantalla)
+
+// Rango de zoom en el que se muestra lo pintado (se cambia abajo, en "Ver pintado")
+const ZOOM_LO = 6, ZOOM_HI = 19;
+let viewMin = MIN_VIEW, viewMax = ZOOM_HI;
+try {
+  const v = JSON.parse(localStorage.getItem('pixelmap-viewzoom') || 'null');
+  if (Array.isArray(v)) { viewMin = v[0]; viewMax = v[1]; }
+} catch (e) {}
+function showPainted() { const z = map.getZoom(); return z >= viewMin && z <= viewMax; }
 const API = 'api.php';
 const TPL_KEY = 'pixelmap-template';
 const COLORS = ['#000000','#3c3c3c','#787878','#d2d2d2','#ffffff','#600018','#ed1c24','#ff7f27',
@@ -162,14 +180,15 @@ function draw() {
   computeProgress();
   const s = map.getSize();
   ctx.clearRect(0, 0, s.x, s.y);
-  if (map.getZoom() < MIN_VIEW) return;
+  if (map.getZoom() < ZOOM_LO) return;
+  const showPx = showPainted();
   const scale = Math.pow(2, map.getZoom() - Z);
   const o = map.getPixelBounds().min;
   const size = Math.max(scale, 1);
 
   // Pixeles guardados (atenuados si se esta resaltando lo nuevo)
   if (highlightNew) ctx.globalAlpha = 0.2;
-  for (const [k, c] of pixels) {
+  if (showPx) for (const [k, c] of pixels) {
     if (pending.has(k)) continue;
     const i = k.indexOf(',');
     const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
@@ -181,7 +200,7 @@ function draw() {
 
   // Pixeles nuevos (sin confirmar)
   const pendVisible = [];
-  for (const [k, c] of pending) {
+  if (showPx) for (const [k, c] of pending) {
     const i = k.indexOf(',');
     const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
     if (sx < -size || sy < -size || sx > s.x || sy > s.y) continue;
@@ -283,7 +302,7 @@ async function fetchArea(x1, y1, x2, y2) {
 }
 
 function load() {
-  if (map.getZoom() < MIN_VIEW) { draw(); return; }
+  if (map.getZoom() < Math.min(viewMin, MIN_PAINT)) { draw(); return; }
   const b = map.getBounds();
   const a = map.project(b.getNorthWest(), Z).floor();
   const c = map.project(b.getSouthEast(), Z).floor();
@@ -631,7 +650,8 @@ function updateInfo() {
   else if (tpl.placing) setInfo('Clic en el mapa para colocar la plantilla (Esc para cancelar)');
   else if (z < MIN_PAINT) setInfo('Acercate para pintar (zoom ' + z + ' / ' + MIN_PAINT + ')');
   else if (spaceDown) setInfo('Pintando... (suelta Espacio para parar)');
-  else setInfo((hover ? `Pixel ${hover.x}, ${hover.y} · ` : '') + 'Clic para pintar · mantén Espacio y mueve el mouse');
+  else setInfo((showPainted() ? '' : 'Pintado oculto en este zoom · ') +
+               (hover ? `Pixel ${hover.x}, ${hover.y} · ` : '') + 'Clic para pintar · mantén Espacio y mueve el mouse');
 }
 
 // ---- Paleta ----
@@ -737,6 +757,26 @@ renderPalette();
 document.getElementById('eraserSize').oninput = e => setEraserSize(+e.target.value);
 document.getElementById('eraserSize').onchange = e => e.target.blur();
 setEraserSize(eraserSize);
+
+// ---- Rango de zoom para ver lo pintado ----
+function updateZoomRow() {
+  document.getElementById('zMin').value = viewMin;
+  document.getElementById('zMax').value = viewMax;
+  const z = map.getZoom();
+  document.getElementById('zCur').textContent = `(actual ${z}${showPainted() ? '' : ' · oculto'})`;
+}
+function setViewZoom(lo, hi, changedField) {
+  lo = Math.max(ZOOM_LO, Math.min(ZOOM_HI, Math.round(lo) || ZOOM_LO));
+  hi = Math.max(ZOOM_LO, Math.min(ZOOM_HI, Math.round(hi) || ZOOM_HI));
+  if (lo > hi) { if (changedField === 'min') hi = lo; else lo = hi; }   // mantiene min <= max
+  viewMin = lo; viewMax = hi;
+  try { localStorage.setItem('pixelmap-viewzoom', JSON.stringify([lo, hi])); } catch (e) {}
+  updateZoomRow(); load(); draw(); updateInfo();
+}
+document.getElementById('zMin').onchange = e => setViewZoom(+e.target.value, viewMax, 'min');
+document.getElementById('zMax').onchange = e => setViewZoom(viewMin, +e.target.value, 'max');
+viewMin = Math.max(ZOOM_LO, Math.min(ZOOM_HI, viewMin)); viewMax = Math.max(viewMin, Math.min(ZOOM_HI, viewMax));
+updateZoomRow();
 document.getElementById('eraserRow').hidden = color !== null;
 
 // ---- Plantilla ----
@@ -971,7 +1011,7 @@ window.addEventListener('blur', () => { altAlone = false; });
 map.on('mouseout', () => { hover = null; draw(); });
 map.on('move', draw);
 map.on('zoomstart', () => { canvas.style.visibility = 'hidden'; });
-map.on('zoomend', () => { canvas.style.visibility = ''; draw(); updateInfo(); });
+map.on('zoomend', () => { canvas.style.visibility = ''; draw(); updateInfo(); updateZoomRow(); });
 map.on('moveend', load);
 map.on('resize', resize);
 
