@@ -42,7 +42,7 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - Panel **Plantilla** (arriba a la derecha): elige una imagen; aparece centrada en la vista.
 - **Ancho:** cuantos pixeles del mapa ocupa (1 px de imagen = 1 pixel del mapa). Por defecto max. 200.
 - **Mover:** luego haz clic en el mapa donde ira la esquina superior izquierda (Esc cancela).
-- **Opacidad / Ocultar / Quitar.**
+- **Opacidad / Ocultar / Quitar.** La tecla **Alt** (sola) muestra/oculta la plantilla.
 - **Pintar con los colores de la plantilla:** el clic y el trazo con Espacio usan el color de la imagen en ese pixel; fuera de la imagen o en zonas transparentes no pinta. Elegir un color de la paleta lo desactiva.
 - **Ver faltantes:** muestra solo lo que falta de la plantilla (con un punto en cada pixel); lo ya pintado correctamente se ve solido. Los pixeles pintados con otro color cuentan como faltantes. Debajo aparece el progreso (pintados / total y %).
 - **Ir a faltante:** centra el mapa en el siguiente pixel que falta (cada clic avanza al siguiente).

@@ -136,21 +136,6 @@ function draw() {
   const o = map.getPixelBounds().min;
   const size = Math.max(scale, 1);
 
-  // Plantilla (debajo de los pixeles pintados)
-  if (tpl.canvas && (tpl.visible || tpl.placing) && (!tpl.showMissing || tpl.placing)) {
-    const p = tplPos();
-    ctx.save();
-    ctx.globalAlpha = tpl.placing ? Math.max(tpl.opacity, 0.6) : tpl.opacity;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(tpl.canvas, p.x * scale - o.x, p.y * scale - o.y, tpl.w * scale, tpl.h * scale);
-    ctx.restore();
-    if (tpl.placing) {
-      ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
-      ctx.strokeRect(p.x * scale - o.x, p.y * scale - o.y, tpl.w * scale, tpl.h * scale);
-      ctx.setLineDash([]);
-    }
-  }
-
   for (const [k, c] of pixels) {
     const i = k.indexOf(',');
     const sx = k.slice(0, i) * scale - o.x, sy = k.slice(i + 1) * scale - o.y;
@@ -159,7 +144,25 @@ function draw() {
     ctx.fillRect(sx, sy, size, size);
   }
 
-  // Modo "ver faltantes": encima de todo, solo los pixeles que faltan o estan mal
+  // Plantilla ENCIMA de los pixeles pintados (asi Alt / Ocultar siempre se nota).
+  // En "ver faltantes" se dibuja tenue, como referencia, y los faltantes resaltados encima.
+  if (tpl.canvas && (tpl.visible || tpl.placing)) {
+    const p = tplPos();
+    const missMode = tpl.showMissing && !tpl.placing;
+    ctx.save();
+    ctx.globalAlpha = tpl.placing ? Math.max(tpl.opacity, 0.6)
+                    : missMode ? Math.min(tpl.opacity, 0.3) : tpl.opacity;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(tpl.canvas, p.x * scale - o.x, p.y * scale - o.y, tpl.w * scale, tpl.h * scale);
+    ctx.restore();
+    ctx.lineWidth = tpl.placing ? 2 : 1;
+    ctx.strokeStyle = tpl.placing ? '#1a73e8' : missMode ? '#e8711a' : 'rgba(26,115,232,.6)';
+    ctx.setLineDash(tpl.placing ? [6, 4] : [4, 3]);
+    ctx.strokeRect(p.x * scale - o.x - .5, p.y * scale - o.y - .5, tpl.w * scale + 1, tpl.h * scale + 1);
+    ctx.setLineDash([]);
+  }
+
+  // Modo "ver faltantes": solo los pixeles que faltan o estan mal, resaltados
   if (tpl.showMissing && tpl.missCanvas && tpl.visible && !tpl.placing) {
     const ox = tpl.x * scale - o.x, oy = tpl.y * scale - o.y;
     ctx.save();
@@ -179,9 +182,6 @@ function draw() {
         ctx.fillRect(ox + x * scale + off, oy + y * scale + off, d, d);
       }
     }
-    ctx.strokeStyle = '#e8711a'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
-    ctx.strokeRect(ox - .5, oy - .5, tpl.w * scale + 1, tpl.h * scale + 1);
-    ctx.setLineDash([]);
   }
   if (hover && map.getZoom() >= MIN_PAINT && !tpl.placing) {
     ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
@@ -609,7 +609,16 @@ $('tplW').onchange = e => {
   tpl.src = tpl.canvas.toDataURL('image/png');
   saveTpl(); draw(); loadTplArea();
 };
-$('tplMiss').onchange = e => { tpl.showMissing = e.target.checked; tpl.visible = true; saveTpl(); syncUI(); draw(); };
+$('tplMiss').onchange = e => {
+  tpl.showMissing = e.target.checked; tpl.visible = true;
+  saveTpl(); syncUI(); draw();
+  e.target.blur();                 // devuelve el foco al mapa para que Alt / Espacio respondan
+  if (tpl.showMissing && tpl.total) {
+    const faltan = tpl.total - tpl.done;
+    setInfo(faltan ? `Faltan ${faltan} pixeles (marcados con un punto)`
+                   : 'Plantilla completa: no falta ningun pixel');
+  }
+};
 $('tplNext').onclick = goToMissing;
 $('tplAuto').onclick = autoPaint;
 $('tplOp').oninput = e => { tpl.opacity = +e.target.value; saveTpl(); draw(); };
@@ -700,8 +709,28 @@ document.addEventListener('keydown', e => {
   if (hover) strokeTo(hover);
   updateInfo();
 });
-document.addEventListener('keyup', e => { if (e.code === 'Space') stopStroke(); });
+document.addEventListener('keyup', e => {
+  if (e.code !== 'Space') return;
+  // evita que Espacio "haga clic" en el boton o casilla que tenga el foco
+  if (!(e.target.matches && e.target.matches('input[type=number]'))) e.preventDefault();
+  stopStroke();
+});
 window.addEventListener('blur', stopStroke);
+
+// Alt (sola) = mostrar/ocultar la plantilla. Si se usa en combinacion (Alt+Tab, etc.) no hace nada.
+let altAlone = false;
+document.addEventListener('keydown', e => { altAlone = e.key === 'Alt' && !e.repeat ? true : (e.key === 'Alt' ? altAlone : false); });
+document.addEventListener('keyup', e => {
+  if (e.key !== 'Alt') return;
+  e.preventDefault();               // evita que Windows active el menu del navegador
+  if (!altAlone) return;
+  altAlone = false;
+  if (!tpl.canvas) return;
+  tpl.visible = !tpl.visible;
+  saveTpl(); syncUI(); draw();
+  setInfo(tpl.visible ? 'Plantilla visible (Alt para ocultar)' : 'Plantilla oculta (Alt para mostrar)');
+});
+window.addEventListener('blur', () => { altAlone = false; });
 map.on('mouseout', () => { hover = null; draw(); });
 map.on('move', draw);
 map.on('zoomstart', () => { canvas.style.visibility = 'hidden'; });
