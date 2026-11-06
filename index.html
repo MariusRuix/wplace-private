@@ -58,6 +58,11 @@
     <button id="tplDel">Quitar</button>
   </div>
   <div class="row needs"><label style="flex:1"><input type="checkbox" id="tplUse"> Pintar con los colores de la plantilla</label></div>
+  <div class="row needs">
+    <label style="flex:1"><input type="checkbox" id="tplMiss"> Ver faltantes</label>
+    <button id="tplNext" style="flex:0 0 auto" title="Centrar el mapa en el siguiente pixel que falta">Ir a faltante</button>
+  </div>
+  <div class="hint needs" id="tplProg"></div>
   <div class="hint needs">Cada pixel de la imagen = 1 pixel del mapa.</div>
 </details>
 
@@ -93,7 +98,8 @@ try { customColors = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]'); } cat
 
 // Plantilla: imagen original + version reescalada (1 px = 1 pixel del mapa)
 const tpl = { src: null, img: null, canvas: null, data: null, x: 0, y: 0, w: 0, h: 0,
-              opacity: 0.5, visible: true, placing: false, use: false };
+              opacity: 0.5, visible: true, placing: false, use: false,
+              hex: null, showMissing: false, missCanvas: null, missMask: null, lum: null, lastGo: null };
 
 // ---- Mapa ----
 const map = L.map('map', { worldCopyJump: true }).setView([19.4326, -99.1332], 16);
@@ -118,6 +124,7 @@ function tplPos() {
 }
 
 function draw() {
+  computeProgress();
   const s = map.getSize();
   ctx.clearRect(0, 0, s.x, s.y);
   if (map.getZoom() < MIN_VIEW) return;
@@ -126,7 +133,7 @@ function draw() {
   const size = Math.max(scale, 1);
 
   // Plantilla (debajo de los pixeles pintados)
-  if (tpl.canvas && (tpl.visible || tpl.placing)) {
+  if (tpl.canvas && (tpl.visible || tpl.placing) && (!tpl.showMissing || tpl.placing)) {
     const p = tplPos();
     ctx.save();
     ctx.globalAlpha = tpl.placing ? Math.max(tpl.opacity, 0.6) : tpl.opacity;
@@ -147,6 +154,31 @@ function draw() {
     ctx.fillStyle = c;
     ctx.fillRect(sx, sy, size, size);
   }
+
+  // Modo "ver faltantes": encima de todo, solo los pixeles que faltan o estan mal
+  if (tpl.showMissing && tpl.missCanvas && tpl.visible && !tpl.placing) {
+    const ox = tpl.x * scale - o.x, oy = tpl.y * scale - o.y;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = Math.max(tpl.opacity, 0.7);
+    ctx.drawImage(tpl.missCanvas, ox, oy, tpl.w * scale, tpl.h * scale);
+    ctx.restore();
+    // marca cada faltante con un punto (solo si se ve lo bastante grande)
+    if (scale >= 4) {
+      const x0 = Math.max(0, Math.floor(-ox / scale)), x1 = Math.min(tpl.w, Math.ceil((s.x - ox) / scale));
+      const y0 = Math.max(0, Math.floor(-oy / scale)), y1 = Math.min(tpl.h, Math.ceil((s.y - oy) / scale));
+      const d = Math.max(2, Math.round(scale / 4)), off = (scale - d) / 2;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const j = y * tpl.w + x;
+        if (!tpl.missMask[j]) continue;
+        ctx.fillStyle = tpl.lum[j] > 140 ? 'rgba(0,0,0,.6)' : 'rgba(255,255,255,.8)';
+        ctx.fillRect(ox + x * scale + off, oy + y * scale + off, d, d);
+      }
+    }
+    ctx.strokeStyle = '#e8711a'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(ox - .5, oy - .5, tpl.w * scale + 1, tpl.h * scale + 1);
+    ctx.setLineDash([]);
+  }
   if (hover && map.getZoom() >= MIN_PAINT && !tpl.placing) {
     ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
     ctx.strokeRect(hover.x * scale - o.x + .5, hover.y * scale - o.y + .5, size - 1, size - 1);
@@ -158,17 +190,75 @@ function toCell(latlng) {
   return { x: p.x, y: p.y };
 }
 
-async function load() {
+async function fetchArea(x1, y1, x2, y2) {
+  try {
+    const r = await fetch(`${API}?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}`);
+    const data = await r.json();
+    for (const [x, y, col] of data) pixels.set(x + ',' + y, col);
+    pxVer++;
+    draw();
+  } catch (e) { setInfo('No se pudo cargar: ' + e.message); }
+}
+
+function load() {
   if (map.getZoom() < MIN_VIEW) { draw(); return; }
   const b = map.getBounds();
   const a = map.project(b.getNorthWest(), Z).floor();
   const c = map.project(b.getSouthEast(), Z).floor();
-  try {
-    const r = await fetch(`${API}?x1=${a.x}&y1=${a.y}&x2=${c.x}&y2=${c.y}`);
-    const data = await r.json();
-    for (const [x, y, col] of data) pixels.set(x + ',' + y, col);
-    draw();
-  } catch (e) { setInfo('No se pudo cargar: ' + e.message); }
+  fetchArea(a.x, a.y, c.x, c.y);
+}
+
+// Carga los pixeles de toda la plantilla (para contar el progreso aunque no este en pantalla)
+function loadTplArea() {
+  if (tpl.data) fetchArea(tpl.x, tpl.y, tpl.x + tpl.w - 1, tpl.y + tpl.h - 1);
+}
+
+// ---- Progreso: que pixeles de la plantilla faltan ----
+let pxVer = 0, tplVer = 0, progSig = '';
+function computeProgress() {
+  const sig = tpl.data ? `${pxVer}|${tplVer}|${tpl.x}|${tpl.y}` : '';
+  if (sig === progSig) return;
+  progSig = sig;
+  const el = document.getElementById('tplProg');
+  if (!tpl.data) { tpl.missCanvas = null; tpl.missMask = null; if (el) el.textContent = ''; return; }
+  const w = tpl.w, h = tpl.h, d = tpl.data;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const cx = c.getContext('2d');
+  const out = cx.createImageData(w, h), od = out.data;
+  const mask = new Uint8Array(w * h), lum = new Uint8Array(w * h);
+  let total = 0, done = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const j = y * w + x, i = j * 4;
+    if (d[i + 3] < 128) continue;
+    total++;
+    if (pixels.get((tpl.x + x) + ',' + (tpl.y + y)) === tpl.hex[j]) { done++; continue; }
+    mask[j] = 1;
+    lum[j] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    od[i] = d[i]; od[i + 1] = d[i + 1]; od[i + 2] = d[i + 2]; od[i + 3] = 255;
+  }
+  cx.putImageData(out, 0, 0);
+  tpl.missCanvas = c; tpl.missMask = mask; tpl.lum = lum;
+  tpl.total = total; tpl.done = done;
+  const pct = total ? Math.floor(done * 100 / total) : 0;
+  if (el) el.textContent = `Pintados ${done} / ${total} (${pct}%) · faltan ${total - done}`;
+}
+
+// Centra el mapa en el siguiente pixel faltante
+function goToMissing() {
+  computeProgress();
+  if (!tpl.missMask) return;
+  const m = tpl.missMask, w = tpl.w;
+  const start = tpl.lastGo == null ? 0 : tpl.lastGo + 1;
+  for (let k = 0; k < m.length; k++) {
+    const j = (start + k) % m.length;
+    if (!m[j]) continue;
+    tpl.lastGo = j;
+    const cell = { x: tpl.x + (j % w), y: tpl.y + Math.floor(j / w) };
+    const ll = map.unproject([cell.x + 0.5, cell.y + 0.5], Z);
+    map.setView(ll, Math.max(map.getZoom(), MIN_PAINT + 2));
+    return;
+  }
+  setInfo('¡No falta ningun pixel!');
 }
 
 // Color de la plantilla en un pixel del mapa (undefined = fuera o transparente)
@@ -176,9 +266,7 @@ function tplColor(cell) {
   if (!tpl.data) return undefined;
   const ix = cell.x - tpl.x, iy = cell.y - tpl.y;
   if (ix < 0 || iy < 0 || ix >= tpl.w || iy >= tpl.h) return undefined;
-  const i = (iy * tpl.w + ix) * 4, d = tpl.data;
-  if (d[i + 3] < 128) return undefined;
-  return '#' + [d[i], d[i + 1], d[i + 2]].map(v => v.toString(16).padStart(2, '0')).join('');
+  return tpl.hex[iy * tpl.w + ix] || undefined;
 }
 
 function brushColor(cell) {
@@ -192,6 +280,7 @@ async function paint(cell) {
   const prev = pixels.get(key);
   if ((prev || null) === c) return;       // ya tiene ese color
   if (c) pixels.set(key, c); else pixels.delete(key);
+  pxVer++;
   draw();
   const headers = { 'Content-Type': 'application/json' };
   let pass = '';
@@ -200,6 +289,7 @@ async function paint(cell) {
   const r = await fetch(API, { method: 'POST', headers, body: JSON.stringify({ x: cell.x, y: cell.y, color: c }) });
   if (!r.ok) {
     if (prev) pixels.set(key, prev); else pixels.delete(key);
+    pxVer++;
     draw();
     if (r.status === 401) {
       if (asking) return;
@@ -308,7 +398,7 @@ function saveTpl() {
     if (!tpl.src) { localStorage.removeItem(TPL_KEY); return; }
     localStorage.setItem(TPL_KEY, JSON.stringify({
       src: tpl.src, x: tpl.x, y: tpl.y, w: tpl.w,
-      opacity: tpl.opacity, visible: tpl.visible, use: tpl.use
+      opacity: tpl.opacity, visible: tpl.visible, use: tpl.use, showMissing: tpl.showMissing
     }));
   } catch (e) { /* imagen muy grande para localStorage: solo dura esta sesion */ }
 }
@@ -326,6 +416,16 @@ function buildTpl(width) {
   cx.drawImage(img, 0, 0, tpl.w, tpl.h);
   tpl.canvas = c;
   tpl.data = cx.getImageData(0, 0, tpl.w, tpl.h).data;
+  // color hex de cada pixel (null = transparente)
+  const d = tpl.data;
+  tpl.hex = new Array(tpl.w * tpl.h);
+  for (let j = 0; j < tpl.hex.length; j++) {
+    const i = j * 4;
+    tpl.hex[j] = d[i + 3] < 128 ? null
+      : '#' + ((1 << 24) | (d[i] << 16) | (d[i + 1] << 8) | d[i + 2]).toString(16).slice(1);
+  }
+  tpl.lastGo = null;
+  tplVer++;
   $('tplW').value = tpl.w;
   $('tplH').textContent = '× ' + tpl.h;
 }
@@ -336,6 +436,7 @@ function syncUI() {
   $('tplShow').textContent = tpl.visible ? 'Ocultar' : 'Mostrar';
   $('tplMove').classList.toggle('on', tpl.placing);
   $('tplUse').checked = tpl.use;
+  $('tplMiss').checked = tpl.showMissing;
 }
 
 function loadImage(src, cb) {
@@ -358,7 +459,7 @@ $('tplFile').onchange = e => {
     tpl.x = c.x - Math.floor(tpl.w / 2); tpl.y = c.y - Math.floor(tpl.h / 2);
     tpl.visible = true;
     if (map.getZoom() < MIN_PAINT - 1) map.setZoom(MIN_PAINT - 1);
-    saveTpl(); syncUI(); draw();
+    saveTpl(); syncUI(); draw(); loadTplArea();
   });
   reader.readAsDataURL(f);
   e.target.value = '';
@@ -368,15 +469,17 @@ $('tplW').onchange = e => {
   if (!tpl.img) return;
   buildTpl(+e.target.value || tpl.w);
   tpl.src = tpl.canvas.toDataURL('image/png');
-  saveTpl(); draw();
+  saveTpl(); draw(); loadTplArea();
 };
+$('tplMiss').onchange = e => { tpl.showMissing = e.target.checked; tpl.visible = true; saveTpl(); syncUI(); draw(); };
+$('tplNext').onclick = goToMissing;
 $('tplOp').oninput = e => { tpl.opacity = +e.target.value; saveTpl(); draw(); };
 $('tplShow').onclick = () => { tpl.visible = !tpl.visible; saveTpl(); syncUI(); draw(); };
 $('tplMove').onclick = () => { if (picking) setPicking(false); tpl.placing = !tpl.placing; syncUI(); updateInfo(); draw(); };
 $('tplUse').onchange = e => { tpl.use = e.target.checked; saveTpl(); };
 $('tplDel').onclick = () => {
   if (!confirm('¿Quitar la plantilla? (los pixeles pintados se quedan)')) return;
-  Object.assign(tpl, { src: null, img: null, canvas: null, data: null, placing: false, use: false });
+  Object.assign(tpl, { src: null, img: null, canvas: null, data: null, hex: null, placing: false, use: false });
   saveTpl(); syncUI(); updateInfo(); draw();
 };
 
@@ -387,9 +490,10 @@ try {
     loadImage(saved.src, img => {
       tpl.img = img; tpl.src = saved.src;
       Object.assign(tpl, { x: saved.x, y: saved.y, opacity: saved.opacity ?? 0.5,
-                           visible: saved.visible !== false, use: !!saved.use });
+                           visible: saved.visible !== false, use: !!saved.use,
+                           showMissing: !!saved.showMissing });
       buildTpl(saved.w || img.naturalWidth);
-      syncUI(); draw();
+      syncUI(); draw(); loadTplArea();
     });
   }
 } catch (e) {}
@@ -400,8 +504,8 @@ map.on('click', e => {
   if (picking) { pickAt(toCell(e.latlng)); return; }
   if (tpl.placing) {
     const c = toCell(e.latlng);
-    tpl.x = c.x; tpl.y = c.y; tpl.placing = false; tpl.visible = true;
-    saveTpl(); syncUI(); updateInfo(); draw();
+    tpl.x = c.x; tpl.y = c.y; tpl.placing = false; tpl.visible = true; tpl.lastGo = null;
+    saveTpl(); syncUI(); updateInfo(); draw(); loadTplArea();
     return;
   }
   if (map.getZoom() < MIN_PAINT) { map.setView(e.latlng, MIN_PAINT + 1); return; }

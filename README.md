@@ -38,6 +38,8 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - **Mover:** luego haz clic en el mapa donde ira la esquina superior izquierda (Esc cancela).
 - **Opacidad / Ocultar / Quitar.**
 - **Pintar con los colores de la plantilla:** el clic y el trazo con Espacio usan el color de la imagen en ese pixel; fuera de la imagen o en zonas transparentes no pinta. Elegir un color de la paleta lo desactiva.
+- **Ver faltantes:** muestra solo lo que falta de la plantilla (con un punto en cada pixel); lo ya pintado correctamente se ve solido. Los pixeles pintados con otro color cuentan como faltantes. Debajo aparece el progreso (pintados / total y %).
+- **Ir a faltante:** centra el mapa en el siguiente pixel que falta (cada clic avanza al siguiente).
 - La plantilla se recuerda en ese navegador (no se sube al servidor).
 
 ## Opciones
