@@ -73,6 +73,7 @@
     <select id="fillMode" style="flex:1">
       <option value="clasico">Área cerrada (lo pintado)</option>
       <option value="plantilla">Color de la plantilla</option>
+      <option value="contorno">Contorno del color elegido</option>
     </select>
   </div>
   <div class="row needs">
@@ -388,7 +389,9 @@ async function autoPaint() {
 // ---- Bote de pintura ----
 // Modo "clasico": rellena el area cerrada segun lo pintado (mismo color o vacio), como en Paint.
 // Modo "plantilla": rellena el bloque continuo del mismo color de la imagen.
-// En ambos casos solo dentro de la plantilla.
+// Modo "contorno": rellena con el color elegido todo lo que este dentro de un contorno de ese
+//   mismo color, sin importar los demas colores pintados ni los de la plantilla.
+// En todos los casos solo dentro de la plantilla.
 let filling = false, fillBusy = false;
 let fillMode = 'clasico';
 try { fillMode = localStorage.getItem('pixelmap-fillmode') || 'clasico'; } catch (e) {}
@@ -409,6 +412,8 @@ function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >
 function computeRegion(cell) {
   const j0 = tplIndex(cell);
   if (j0 < 0) return null;
+  const contorno = fillMode === 'contorno';
+  if (contorno && !color) return { invalid: 'elige un color de la paleta (no el borrador)', list: [], size: 0 };
   const sig = `${fillMode}|${pxVer}|${tplVer}|${tpl.x}|${tpl.y}|${tpl.use}|${color}`;
   if (fillCache && fillCache.sig === sig && fillCache.mask[j0]) return fillCache;
 
@@ -416,6 +421,11 @@ function computeRegion(cell) {
   const painted = k => effective((ox + k % w) + ',' + (oy + ((k / w) | 0)));
   let same;
   if (fillMode === 'plantilla') { const t = hex[j0]; same = k => hex[k] === t; }
+  else if (contorno) {
+    // el limite es el color elegido; todo lo demas se rellena
+    if (painted(j0) === color) return { invalid: 'ese pixel ya es parte del contorno', list: [], size: 0 };
+    same = k => hex[k] !== null && painted(k) !== color;
+  }
   else { const t = painted(j0); same = k => hex[k] !== null && painted(k) === t; }
 
   const mask = new Uint8Array(w * h), stack = [j0], region = [];
@@ -433,9 +443,10 @@ function computeRegion(cell) {
   const list = [];
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const cx = c.getContext('2d'), img = cx.createImageData(w, h), od = img.data, d = tpl.data;
-  const fixed = tpl.use ? null : (color ? hexToRgb(color) : [255, 0, 255]);   // magenta = borrar
+  const useTpl = tpl.use && !contorno;   // el modo contorno siempre usa el color elegido
+  const fixed = useTpl ? null : (color ? hexToRgb(color) : [255, 0, 255]);   // magenta = borrar
   for (const j of region) {
-    const fc = tpl.use ? hex[j] : color;
+    const fc = useTpl ? hex[j] : color;
     const prev = painted(j);
     if (prev !== fc) list.push([ox + j % w, oy + ((j / w) | 0), fc, prev]);
     const i = j * 4;
@@ -451,6 +462,7 @@ function computeRegion(cell) {
 function bucketFill(cell) {
   const reg = computeRegion(cell);
   if (!reg) { setInfo('El bote solo funciona dentro de la plantilla'); return; }
+  if (reg.invalid) { setInfo('Bote: ' + reg.invalid); return; }
   const list = reg.list;
   if (!list.length) { setInfo('Esa area ya tiene ese color'); return; }
   const op = [];
@@ -574,8 +586,9 @@ function updateInfo() {
   }
   else if (filling) {
     const reg = hover && !fillBusy ? computeRegion(hover) : null;
-    const modo = fillMode === 'plantilla' ? 'color de la plantilla' : 'area cerrada';
+    const modo = { plantilla: 'color de la plantilla', contorno: 'contorno del color elegido' }[fillMode] || 'area cerrada';
     if (!reg) setInfo(`Bote (${modo}): solo funciona dentro de la plantilla · Esc cancela`);
+    else if (reg.invalid) setInfo(`Bote (${modo}): ${reg.invalid}`);
     else if (!reg.list.length) setInfo(`Bote (${modo}): esa area (${reg.size} px) ya tiene ese color`);
     else setInfo(`Bote (${modo}): clic para rellenar ${reg.list.length} pixeles · Esc cancela`);
   }

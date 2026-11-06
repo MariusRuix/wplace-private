@@ -44,6 +44,7 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
 - **Bote de pintura** (tecla **B**): solo funciona dentro de la plantilla. Al pasar el mouse muestra una vista previa del area y cuantos pixeles se pintaran. Dos modos (se eligen en el panel Plantilla):
   - **Area cerrada (lo pintado):** como el bote de Paint; rellena los pixeles conectados con el mismo color pintado (o vacios) hasta chocar con otro color. Sirve para dibujar un contorno y rellenarlo.
   - **Color de la plantilla:** rellena el bloque continuo del mismo color de la imagen.
+  - **Contorno del color elegido:** rellena con el color de la paleta todo lo que este dentro de un contorno de ese mismo color, sin importar los demas colores pintados ni los de la plantilla. Ej.: dibuja un contorno negro con Espacio y rellena el interior de negro. Siempre usa el color de la paleta (no funciona con el borrador). Si el contorno tiene un hueco, el relleno se extiende por toda la plantilla (la vista previa lo muestra).
   Usa el color de la paleta, o los de la plantilla si esta marcado "Pintar con los colores de la plantilla"; con el borrador, borra. Esc cancela.
 - **Deshacer** (boton con flecha o **Ctrl+Z**): revierte el ultimo clic, trazo con Espacio, relleno o pintado automatico (hasta 50 pasos). Si lo deshecho ya estaba confirmado, el cambio queda como nuevo y hay que confirmarlo.
 
