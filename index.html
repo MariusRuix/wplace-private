@@ -29,6 +29,9 @@
   #map.picking { cursor: copy; }
   #map.filling { cursor: cell; }
   #info { font-size: 12px; color: #555; text-align: center; }
+  #eraserRow { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: #555; }
+  #eraserRow[hidden] { display: none; }
+  #eraserVal { min-width: 40px; }
   #pend {
     display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
     background: #fff4d6; border: 1px solid #f0c75e; border-radius: 8px; padding: 6px 8px; font-size: 13px;
@@ -95,6 +98,11 @@
     <button id="pendOk" title="Guardar los pixeles nuevos en el servidor (Enter)">Confirmar</button>
   </div>
   <div id="palette"></div>
+  <div id="eraserRow" hidden title="Teclas + y - (o [ y ]) para cambiar el tamano">
+    <label for="eraserSize">Tamaño del borrador</label>
+    <input type="range" id="eraserSize" min="1" max="25" step="1">
+    <span id="eraserVal"></span>
+  </div>
   <div id="info">Acercate para pintar</div>
 </div>
 
@@ -251,8 +259,11 @@ function draw() {
     }
   }
   if (hover && map.getZoom() >= MIN_PAINT && !tpl.placing) {
-    ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
-    ctx.strokeRect(hover.x * scale - o.x + .5, hover.y * scale - o.y + .5, size - 1, size - 1);
+    const n = !picking && !filling && isEraser() ? eraserSize : 1, off = Math.floor(n / 2);
+    const bx = (hover.x - off) * scale - o.x, by = (hover.y - off) * scale - o.y, bs = n * size;
+    if (n > 1) { ctx.fillStyle = 'rgba(255,0,255,.15)'; ctx.fillRect(bx, by, bs, bs); }
+    ctx.strokeStyle = n > 1 ? '#c000c0' : '#000'; ctx.lineWidth = 1;
+    ctx.strokeRect(bx + .5, by + .5, bs - 1, bs - 1);
   }
 }
 
@@ -565,15 +576,40 @@ function brushColor(cell) {
   return tpl.use && tpl.data ? tplColor(cell) : color;
 }
 
+// ---- Tamano del borrador ----
+let eraserSize = 1;
+try { eraserSize = Math.max(1, Math.min(25, +localStorage.getItem('pixelmap-eraser') || 1)); } catch (e) {}
+function isEraser() { return color === null && !(tpl.use && tpl.data); }
+
+// Pixeles que toca el pincel en 'cell' (un cuadrado si es el borrador grande)
+function brushCells(cell) {
+  const n = isEraser() ? eraserSize : 1;
+  if (n === 1) return [cell];
+  const o = Math.floor(n / 2), out = [];
+  for (let dy = 0; dy < n; dy++) for (let dx = 0; dx < n; dx++) out.push({ x: cell.x - o + dx, y: cell.y - o + dy });
+  return out;
+}
+
+function setEraserSize(n) {
+  eraserSize = Math.max(1, Math.min(25, Math.round(n)));
+  try { localStorage.setItem('pixelmap-eraser', eraserSize); } catch (e) {}
+  const r = document.getElementById('eraserSize');
+  if (r) { r.value = eraserSize; document.getElementById('eraserVal').textContent = `${eraserSize}×${eraserSize}`; }
+  draw();
+}
+
 function paint(cell) {
-  const c = brushColor(cell);
-  if (c === undefined) return;            // fuera de la plantilla
-  const prev = effective(cell.x + ',' + cell.y);
-  if (prev === c) return;                 // ya tiene ese color
   // guarda para deshacer: dentro del trazo actual, o como paso propio si es un clic
-  if (curOp) curOp.push([cell.x, cell.y, prev]);
-  else pushUndo([[cell.x, cell.y, prev]]);
-  setPending(cell.x, cell.y, c);
+  const op = curOp || [];
+  for (const cl of brushCells(cell)) {
+    const c = brushColor(cl);
+    if (c === undefined) continue;          // fuera de la plantilla
+    const prev = effective(cl.x + ',' + cl.y);
+    if (prev === c) continue;               // ya tiene ese color
+    op.push([cl.x, cl.y, prev]);
+    setPending(cl.x, cl.y, c);
+  }
+  if (!curOp) pushUndo(op);
   changed();
 }
 
@@ -603,6 +639,7 @@ const pal = document.getElementById('palette');
 
 function selectColor(c) {
   color = c;
+  document.getElementById('eraserRow').hidden = c !== null;
   pal.querySelectorAll('.sw').forEach(e => e.classList.toggle('sel', !e.classList.contains('tool') && e.dataset.c === String(c)));
   // elegir un color de la paleta desactiva "pintar con la plantilla"
   if (tpl.use) { tpl.use = false; $('tplUse').checked = false; saveTpl(); }
@@ -697,6 +734,10 @@ function pickAt(cell) {
 }
 
 renderPalette();
+document.getElementById('eraserSize').oninput = e => setEraserSize(+e.target.value);
+document.getElementById('eraserSize').onchange = e => e.target.blur();
+setEraserSize(eraserSize);
+document.getElementById('eraserRow').hidden = color !== null;
 
 // ---- Plantilla ----
 const $ = id => document.getElementById(id);
@@ -890,6 +931,11 @@ document.addEventListener('keydown', e => {
   if (e.target.matches && e.target.matches('input[type=number]')) return;
   if ((e.key === 'i' || e.key === 'I') && !e.ctrlKey && !e.metaKey) { setPicking(!picking); return; }
   if ((e.key === 'b' || e.key === 'B') && !e.ctrlKey && !e.metaKey) { setFilling(!filling); return; }
+  if (['[', ']', '-', '+'].includes(e.key) && !e.ctrlKey && !e.metaKey && isEraser()) {
+    setEraserSize(eraserSize + (e.key === ']' || e.key === '+' ? 1 : -1));
+    setInfo(`Borrador: ${eraserSize}×${eraserSize} pixeles`);
+    return;
+  }
   if (e.code !== 'Space') return;
   if (picking || filling) { e.preventDefault(); return; }
   e.preventDefault();               // evita que Espacio active un boton

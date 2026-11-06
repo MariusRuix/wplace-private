@@ -39,7 +39,7 @@ Sin SSH: sube `index.html` y `api.php` a `public_html` con el Administrador de a
   Si cierras la pagina con pixeles sin confirmar, el navegador avisa.
 - **Clic:** pinta un pixel.
 - **Mantener Espacio + mover el mouse:** pinta por donde pasa el cursor (suelta Espacio para parar).
-- El cuadro con tachado de la paleta borra.
+- El cuadro con tachado de la paleta borra. Con el borrador elegido aparece **Tamaño del borrador** (1×1 a 25×25); tambien se cambia con las teclas **+ / -** (o **[ / ]**). Funciona con clic y con el trazo de Espacio.
 - **Cuentagotas** (primer boton de la paleta o tecla **I**): clic en el mapa para tomar el color de la plantilla en ese pixel (o del pixel pintado si no hay plantilla ahi). El color queda seleccionado y se agrega a la paleta con borde punteado; clic derecho sobre el lo quita. Esc cancela.
 - **Bote de pintura** (tecla **B**): solo funciona dentro de la plantilla. Al pasar el mouse muestra una vista previa del area y cuantos pixeles se pintaran. Dos modos (se eligen en el panel Plantilla):
   - **Area cerrada (lo pintado):** como el bote de Paint; rellena los pixeles conectados con el mismo color pintado (o vacios) hasta chocar con otro color. Sirve para dibujar un contorno y rellenarlo.
