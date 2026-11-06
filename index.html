@@ -60,6 +60,13 @@
   </div>
   <div class="row needs"><label style="flex:1"><input type="checkbox" id="tplUse"> Pintar con los colores de la plantilla</label></div>
   <div class="row needs">
+    <label>Bote</label>
+    <select id="fillMode" style="flex:1">
+      <option value="clasico">Área cerrada (lo pintado)</option>
+      <option value="plantilla">Color de la plantilla</option>
+    </select>
+  </div>
+  <div class="row needs">
     <label style="flex:1"><input type="checkbox" id="tplMiss"> Ver faltantes</label>
     <button id="tplNext" style="flex:0 0 auto" title="Centrar el mapa en el siguiente pixel que falta">Ir a faltante</button>
   </div>
@@ -183,6 +190,17 @@ function draw() {
       }
     }
   }
+  // Vista previa del bote: el area que se rellenaria, con el color que quedaria
+  if (filling && hover && !fillBusy && map.getZoom() >= MIN_PAINT) {
+    const reg = computeRegion(hover);
+    if (reg && reg.list.length) {
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.globalAlpha = 0.6;
+      ctx.drawImage(reg.canvas, tpl.x * scale - o.x, tpl.y * scale - o.y, tpl.w * scale, tpl.h * scale);
+      ctx.restore();
+    }
+  }
   if (hover && map.getZoom() >= MIN_PAINT && !tpl.placing) {
     ctx.strokeStyle = '#000'; ctx.lineWidth = 1;
     ctx.strokeRect(hover.x * scale - o.x + .5, hover.y * scale - o.y + .5, size - 1, size - 1);
@@ -235,6 +253,7 @@ async function autoPaint() {
   const btn = $('tplAuto');
   btn.classList.add('on');
   const BATCH = 500;
+  const autoOp = [];     // para poder deshacer todo el pintado automatico
   let done = 0;
   try {
     for (let k = 0; k < list.length && !autoStop; k += BATCH) {
@@ -253,7 +272,7 @@ async function autoPaint() {
       }
       if (autoStop) break;
       if (!r.ok) { setInfo('Error al guardar el lote'); break; }
-      for (const [x, y, c] of chunk) pixels.set(x + ',' + y, c);
+      for (const [x, y, c] of chunk) { autoOp.push([x, y, pixels.get(x + ',' + y) || null]); pixels.set(x + ',' + y, c); }
       pxVer++;
       done += chunk.length;
       btn.textContent = `Detener (${Math.floor(done * 100 / list.length)}%)`;
@@ -264,6 +283,7 @@ async function autoPaint() {
     setInfo('Error: ' + e.message);
   } finally {
     autoRunning = false;
+    pushUndo(autoOp);
     btn.classList.remove('on');
     btn.textContent = 'Pintar todo automático';
     setInfo(autoStop ? `Detenido: ${done} de ${list.length} pixeles pintados`
@@ -271,8 +291,14 @@ async function autoPaint() {
   }
 }
 
-// ---- Bote de pintura: rellena un bloque continuo del mismo color de la plantilla ----
+// ---- Bote de pintura ----
+// Modo "clasico": rellena el area cerrada segun lo pintado (mismo color o vacio), como en Paint.
+// Modo "plantilla": rellena el bloque continuo del mismo color de la imagen.
+// En ambos casos solo dentro de la plantilla.
 let filling = false, fillBusy = false;
+let fillMode = 'clasico';
+try { fillMode = localStorage.getItem('pixelmap-fillmode') || 'clasico'; } catch (e) {}
+let fillCache = null;   // ultima region calculada (para la vista previa)
 
 async function postBatch(chunk) {
   for (;;) {
@@ -288,46 +314,128 @@ async function postBatch(chunk) {
   }
 }
 
-async function bucketFill(cell) {
-  if (fillBusy) return;
+// Indice del pixel dentro de la plantilla (-1 = fuera o transparente)
+function tplIndex(cell) {
+  if (!tpl.data) return -1;
   const ix = cell.x - tpl.x, iy = cell.y - tpl.y;
-  if (!tpl.data || ix < 0 || iy < 0 || ix >= tpl.w || iy >= tpl.h || !tpl.hex[iy * tpl.w + ix]) {
-    setInfo('El bote solo funciona dentro de la plantilla');
-    return;
-  }
-  const w = tpl.w, h = tpl.h, target = tpl.hex[iy * w + ix];
-  // Relleno por inundacion (4 vecinos) sobre los pixeles de la plantilla con el mismo color
-  const seen = new Uint8Array(w * h), stack = [iy * w + ix], region = [];
-  seen[stack[0]] = 1;
+  if (ix < 0 || iy < 0 || ix >= tpl.w || iy >= tpl.h) return -1;
+  const j = iy * tpl.w + ix;
+  return tpl.hex[j] ? j : -1;
+}
+
+function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; }
+
+// Calcula la region que rellenaria un clic en 'cell'. Usa cache mientras nada cambie.
+function computeRegion(cell) {
+  const j0 = tplIndex(cell);
+  if (j0 < 0) return null;
+  const sig = `${fillMode}|${pxVer}|${tplVer}|${tpl.x}|${tpl.y}|${tpl.use}|${color}`;
+  if (fillCache && fillCache.sig === sig && fillCache.mask[j0]) return fillCache;
+
+  const w = tpl.w, h = tpl.h, hex = tpl.hex, ox = tpl.x, oy = tpl.y;
+  const painted = k => pixels.get((ox + k % w) + ',' + (oy + ((k / w) | 0))) || null;
+  let same;
+  if (fillMode === 'plantilla') { const t = hex[j0]; same = k => hex[k] === t; }
+  else { const t = painted(j0); same = k => hex[k] !== null && painted(k) === t; }
+
+  const mask = new Uint8Array(w * h), stack = [j0], region = [];
+  mask[j0] = 1;
   while (stack.length) {
     const j = stack.pop(), x = j % w, y = (j - x) / w;
     region.push(j);
-    const n = [x > 0 ? j - 1 : -1, x < w - 1 ? j + 1 : -1, y > 0 ? j - w : -1, y < h - 1 ? j + w : -1];
-    for (const k of n) if (k >= 0 && !seen[k] && tpl.hex[k] === target) { seen[k] = 1; stack.push(k); }
+    if (x > 0 && !mask[j - 1] && same(j - 1)) { mask[j - 1] = 1; stack.push(j - 1); }
+    if (x < w - 1 && !mask[j + 1] && same(j + 1)) { mask[j + 1] = 1; stack.push(j + 1); }
+    if (y > 0 && !mask[j - w] && same(j - w)) { mask[j - w] = 1; stack.push(j - w); }
+    if (y < h - 1 && !mask[j + w] && same(j + w)) { mask[j + w] = 1; stack.push(j + w); }
   }
-  // Color del relleno: el de la plantilla si esta marcado "pintar con los colores", si no el de la paleta
-  const fillColor = tpl.use ? target : color;
+
+  // Lista de cambios y lienzo de vista previa (con el color que quedara)
   const list = [];
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const cx = c.getContext('2d'), img = cx.createImageData(w, h), od = img.data, d = tpl.data;
+  const fixed = tpl.use ? null : (color ? hexToRgb(color) : [255, 0, 255]);   // magenta = borrar
   for (const j of region) {
-    const x = tpl.x + (j % w), y = tpl.y + Math.floor(j / w);
-    if ((pixels.get(x + ',' + y) || null) !== fillColor) list.push([x, y, fillColor]);
+    const fc = tpl.use ? hex[j] : color;
+    const prev = painted(j);
+    if (prev !== fc) list.push([ox + j % w, oy + ((j / w) | 0), fc, prev]);
+    const i = j * 4;
+    if (fixed) { od[i] = fixed[0]; od[i + 1] = fixed[1]; od[i + 2] = fixed[2]; }
+    else { od[i] = d[i]; od[i + 1] = d[i + 1]; od[i + 2] = d[i + 2]; }
+    od[i + 3] = 255;
   }
-  if (!list.length) { setInfo('Ese bloque ya esta pintado'); return; }
+  cx.putImageData(img, 0, 0);
+  fillCache = { sig, mask, list, size: region.length, canvas: c };
+  return fillCache;
+}
+
+async function bucketFill(cell) {
+  if (fillBusy) return;
+  const reg = computeRegion(cell);
+  if (!reg) { setInfo('El bote solo funciona dentro de la plantilla'); return; }
+  const list = reg.list;
+  if (!list.length) { setInfo('Esa area ya tiene ese color'); return; }
 
   fillBusy = true;
+  const op = [];
   let done = 0;
   try {
     for (let k = 0; k < list.length; k += 500) {
       const chunk = list.slice(k, k + 500);
-      if (!(await postBatch(chunk))) { setInfo('Error al guardar'); break; }
-      for (const [x, y, c] of chunk) { if (c) pixels.set(x + ',' + y, c); else pixels.delete(x + ',' + y); }
+      if (!(await postBatch(chunk.map(([x, y, c]) => [x, y, c])))) { setInfo('Error al guardar'); break; }
+      for (const [x, y, c, prev] of chunk) {
+        if (c) pixels.set(x + ',' + y, c); else pixels.delete(x + ',' + y);
+        op.push([x, y, prev]);
+      }
       pxVer++; done += chunk.length;
       draw();
     }
   } finally {
     fillBusy = false;
+    pushUndo(op);
   }
-  if (done === list.length) setInfo(`Bote: ${done} pixeles ${fillColor ? 'pintados' : 'borrados'}`);
+  if (done === list.length) setInfo(`Bote: ${done} pixeles ${list[0][2] || tpl.use ? 'pintados' : 'borrados'} · Ctrl+Z para deshacer`);
+}
+
+// ---- Deshacer (Ctrl+Z) ----
+// Cada operacion guarda [x, y, colorAnterior] de los pixeles que cambio.
+const undoStack = [];
+let curOp = null;        // operacion en curso (trazo con Espacio)
+let undoBusy = false;
+
+function pushUndo(op) {
+  if (!op || !op.length) return;
+  undoStack.push(op);
+  if (undoStack.length > 50) undoStack.shift();
+  updateUndoBtn();
+}
+
+function updateUndoBtn() {
+  const b = document.getElementById('undoBtn');
+  if (b) b.style.opacity = undoStack.length ? 1 : .4;
+}
+
+async function undo() {
+  if (undoBusy || fillBusy || autoRunning) return;
+  const op = undoStack.pop();
+  updateUndoBtn();
+  if (!op) { setInfo('Nada que deshacer'); return; }
+  // recorrer al reves: el valor mas antiguo de cada pixel es el que gana
+  const target = new Map();
+  for (let i = op.length - 1; i >= 0; i--) target.set(op[i][0] + ',' + op[i][1], op[i]);
+  const list = [];
+  for (const [k, [x, y, prev]] of target) if ((pixels.get(k) || null) !== prev) list.push([x, y, prev]);
+  undoBusy = true;
+  let done = 0;
+  try {
+    for (let k = 0; k < list.length; k += 500) {
+      const chunk = list.slice(k, k + 500);
+      if (!(await postBatch(chunk))) { setInfo('Error al deshacer'); break; }
+      for (const [x, y, c] of chunk) { if (c) pixels.set(x + ',' + y, c); else pixels.delete(x + ',' + y); }
+      pxVer++; done += chunk.length;
+      draw();
+    }
+  } finally { undoBusy = false; }
+  if (done === list.length) setInfo(`Deshecho: ${done} pixeles (quedan ${undoStack.length} pasos)`);
 }
 
 // ---- Progreso: que pixeles de la plantilla faltan ----
@@ -396,6 +504,9 @@ async function paint(cell) {
   const key = cell.x + ',' + cell.y;
   const prev = pixels.get(key);
   if ((prev || null) === c) return;       // ya tiene ese color
+  // guarda para deshacer: dentro del trazo actual, o como paso propio si es un clic
+  if (curOp) curOp.push([cell.x, cell.y, prev || null]);
+  else pushUndo([[cell.x, cell.y, prev || null]]);
   if (c) pixels.set(key, c); else pixels.delete(key);
   pxVer++;
   draw();
@@ -426,9 +537,11 @@ function updateInfo() {
     setInfo('Cuentagotas: ' + (c || '—') + ' · clic para tomar el color (Esc cancela)');
   }
   else if (filling) {
-    const inside = hover && tplColor(hover);
-    setInfo(inside ? 'Bote: clic para rellenar este bloque (Esc cancela)'
-                   : 'Bote: solo funciona dentro de la plantilla (Esc cancela)');
+    const reg = hover && !fillBusy ? computeRegion(hover) : null;
+    const modo = fillMode === 'plantilla' ? 'color de la plantilla' : 'area cerrada';
+    if (!reg) setInfo(`Bote (${modo}): solo funciona dentro de la plantilla · Esc cancela`);
+    else if (!reg.list.length) setInfo(`Bote (${modo}): esa area (${reg.size} px) ya tiene ese color`);
+    else setInfo(`Bote (${modo}): clic para rellenar ${reg.list.length} pixeles · Esc cancela`);
   }
   else if (tpl.placing) setInfo('Clic en el mapa para colocar la plantilla (Esc para cancelar)');
   else if (z < MIN_PAINT) setInfo('Acercate para pintar (zoom ' + z + ' / ' + MIN_PAINT + ')');
@@ -474,7 +587,7 @@ dropper.onclick = () => setPicking(!picking);
 
 const bucket = document.createElement('button');
 bucket.className = 'sw tool';
-bucket.title = 'Bote de pintura (tecla B): rellena un bloque del mismo color dentro de la plantilla';
+bucket.title = 'Bote de pintura (tecla B): rellena un area dentro de la plantilla. El modo se elige en el panel Plantilla';
 bucket.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg>';
 bucket.onclick = () => setFilling(!filling);
 
@@ -487,8 +600,17 @@ function setFilling(on) {
   updateInfo(); draw();
 }
 
+const undoBtn = document.createElement('button');
+undoBtn.className = 'sw tool';
+undoBtn.id = 'undoBtn';
+undoBtn.title = 'Deshacer (Ctrl+Z)';
+undoBtn.style.opacity = .4;
+undoBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>';
+undoBtn.onclick = () => undo();
+
 function renderPalette() {
   pal.innerHTML = '';
+  pal.appendChild(undoBtn);
   pal.appendChild(dropper);
   pal.appendChild(bucket);
   COLORS.forEach(c => pal.appendChild(makeSwatch(c, false)));
@@ -621,6 +743,13 @@ $('tplMiss').onchange = e => {
 };
 $('tplNext').onclick = goToMissing;
 $('tplAuto').onclick = autoPaint;
+$('fillMode').value = fillMode;
+$('fillMode').onchange = e => {
+  fillMode = e.target.value;
+  try { localStorage.setItem('pixelmap-fillmode', fillMode); } catch (err) {}
+  e.target.blur();
+  updateInfo(); draw();
+};
 $('tplOp').oninput = e => { tpl.opacity = +e.target.value; saveTpl(); draw(); };
 $('tplShow').onclick = () => { tpl.visible = !tpl.visible; saveTpl(); syncUI(); draw(); };
 $('tplMove').onclick = () => { if (picking) setPicking(false); if (filling) setFilling(false); tpl.placing = !tpl.placing; syncUI(); updateInfo(); draw(); };
@@ -684,6 +813,7 @@ function strokeTo(cell) {
 function stopStroke() {
   spaceDown = false;
   lastCell = null;
+  if (curOp) { pushUndo(curOp); curOp = null; }   // todo el trazo = un solo paso de deshacer
   updateInfo();
 }
 
@@ -694,6 +824,10 @@ map.on('mousemove', e => {
 });
 
 document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+    if (e.target.matches && e.target.matches('input[type=number]')) return;
+    e.preventDefault(); undo(); return;
+  }
   if (e.key === 'Escape' && picking) { setPicking(false); return; }
   if (e.key === 'Escape' && filling) { setFilling(false); return; }
   if (e.key === 'Escape' && tpl.placing) { tpl.placing = false; syncUI(); updateInfo(); draw(); return; }
@@ -706,6 +840,7 @@ document.addEventListener('keydown', e => {
   if (e.repeat || spaceDown) return;
   spaceDown = true;
   lastCell = null;
+  curOp = [];
   if (hover) strokeTo(hover);
   updateInfo();
 });
